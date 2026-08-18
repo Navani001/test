@@ -1,7 +1,3 @@
-// ============================================================
-// ENUMS
-// ============================================================
-
 Enum indicator_category {
   CLINICAL
   ADMINISTRATIVE
@@ -47,7 +43,7 @@ Table clients {
 
   name varchar
   schema_name varchar
-  crdif varchar
+  crd_id int
 
   is_base boolean
   is_active boolean
@@ -64,16 +60,29 @@ Table clients {
 Table conditions {
   id uuid [pk]
 
-  client_id uuid [not null]
   current_version_id uuid [null]
 
-  name varchar
-  description text
+  key varchar
 
   is_active boolean
+  user_id uuid
 
   created_at timestamp
   updated_at timestamp
+}
+
+
+// ============================================================
+// CONDITION - CLIENT
+// ============================================================
+
+Table condition_clients {
+  condition_id uuid [not null]
+  client_id uuid [not null]
+
+  indexes {
+    (condition_id, client_id) [pk]
+  }
 }
 
 
@@ -87,9 +96,7 @@ Table condition_versions {
   condition_id uuid [not null]
 
   version int [not null]
-
   display_name varchar
-  description text
 
   is_draft boolean
   is_active boolean
@@ -112,13 +119,9 @@ Table condition_versions {
 Table indicators {
   id uuid [pk]
 
-  name varchar
+  current_version_id uuid [null]
 
-  category indicator_category
-  output indicator_output
-
-  version_id uuid [null]
-  patch_id uuid [null]
+  key varchar
 
   is_active boolean
 
@@ -128,7 +131,33 @@ Table indicators {
 
 
 // ============================================================
-// CONDITION ↔ INDICATOR
+// INDICATOR VERSION
+// ============================================================
+
+Table indicators_versions {
+  id uuid [pk]
+
+  indicator_id uuid [not null]
+
+  name varchar
+
+  category indicator_category
+  output indicator_output
+
+  cui_code varchar [null]
+
+  version int [null]
+
+  is_active boolean
+  is_draft boolean
+
+  created_at timestamp
+  updated_at timestamp
+}
+
+
+// ============================================================
+// CONDITION - INDICATOR
 // ============================================================
 
 Table condition_indicators {
@@ -156,15 +185,15 @@ Table sections {
 
 
 // ============================================================
-// INDICATOR ↔ SECTION
+// INDICATOR - SECTION
 // ============================================================
 
 Table indicator_sections {
-  indicator_id uuid [not null]
+  indicator_version_id uuid [not null]
   section_id uuid [not null]
 
   indexes {
-    (indicator_id, section_id) [pk]
+    (indicator_version_id, section_id) [pk]
   }
 }
 
@@ -176,7 +205,7 @@ Table indicator_sections {
 Table indicator_elements {
   id uuid [pk]
 
-  indicator_id uuid [not null]
+  indicator_version_id uuid [not null]
 
   name varchar
 
@@ -203,7 +232,7 @@ Table icd_codes {
 
 
 // ============================================================
-// CONDITION ↔ ICD CODE
+// CONDITION - ICD CODE
 // ============================================================
 
 Table condition_icd_codes {
@@ -234,46 +263,15 @@ Table atoms {
 
 
 // ============================================================
-// CUI
+// INDICATOR VERSION - ATOM
 // ============================================================
 
-Table cui {
-  id uuid [pk]
-
-  name varchar
-  description text
-
-  is_active boolean
-
-  created_at timestamp
-  updated_at timestamp
-}
-
-
-// ============================================================
-// ATOM ↔ CUI
-// ============================================================
-
-Table atom_cui {
-  atom_id uuid [not null]
-  cui_id uuid [not null]
-
-  indexes {
-    (atom_id, cui_id) [pk]
-  }
-}
-
-
-// ============================================================
-// CONDITION ↔ ATOM
-// ============================================================
-
-Table condition_atoms {
-  condition_version_id uuid [not null]
+Table indicator_atoms {
+  indicator_version_id uuid [not null]
   atom_id uuid [not null]
 
   indexes {
-    (condition_version_id, atom_id) [pk]
+    (indicator_version_id, atom_id) [pk]
   }
 }
 
@@ -288,7 +286,7 @@ Table audit_logs {
   user_id uuid [null]
 
   entity_type varchar [not null]
-  entity_id uuid [not null]
+  entity_key varchar [not null]
 
   action varchar [not null]
 
@@ -300,87 +298,82 @@ Table audit_logs {
 
 
 // ============================================================
-// RELATIONSHIPS
+// REFERENCES
 // ============================================================
 
+// ============================================================
+// CLIENT
+// ============================================================
 
-// ------------------------------------------------------------
-// CLIENT → CONDITION
-// ------------------------------------------------------------
-
-Ref: conditions.client_id > clients.id
+Ref: condition_clients.condition_id > conditions.id
+Ref: condition_clients.client_id > clients.id
 
 
-// ------------------------------------------------------------
-// CONDITION → CONDITION VERSION
-// ------------------------------------------------------------
+// ============================================================
+// USER
+// ============================================================
+
+Ref: conditions.user_id > users.id
+Ref: condition_versions.created_by > users.id
+Ref: audit_logs.user_id > users.id
+
+
+// ============================================================
+// CONDITION VERSION
+// ============================================================
 
 Ref: condition_versions.condition_id > conditions.id
-
 Ref: conditions.current_version_id > condition_versions.id
 
 
-// ------------------------------------------------------------
-// USER → CONDITION VERSION
-// ------------------------------------------------------------
-
-Ref: condition_versions.created_by > users.id
-
-
-// ------------------------------------------------------------
-// CONDITION VERSION ↔ INDICATOR
-// ------------------------------------------------------------
+// ============================================================
+// CONDITION - INDICATOR
+// ============================================================
 
 Ref: condition_indicators.condition_version_id > condition_versions.id
-
 Ref: condition_indicators.indicator_id > indicators.id
 
 
-// ------------------------------------------------------------
-// INDICATOR ↔ SECTION
-// ------------------------------------------------------------
+// ============================================================
+// INDICATOR
+// ============================================================
 
-Ref: indicator_sections.indicator_id > indicators.id
+Ref: indicators.current_version_id > indicators_versions.id
 
+
+// ============================================================
+// INDICATOR VERSION
+// ============================================================
+
+Ref: indicators_versions.indicator_id > indicators.id
+
+
+// ============================================================
+// INDICATOR VERSION - SECTION
+// ============================================================
+
+Ref: indicator_sections.indicator_version_id > indicators_versions.id
 Ref: indicator_sections.section_id > sections.id
 
 
-// ------------------------------------------------------------
-// INDICATOR → ELEMENT
-// ------------------------------------------------------------
+// ============================================================
+// INDICATOR ELEMENT
+// ============================================================
 
-Ref: indicator_elements.indicator_id > indicators.id
+Ref: indicator_elements.indicator_version_id > indicators_versions.id
 
 
-// ------------------------------------------------------------
-// CONDITION VERSION ↔ ICD CODE
-// ------------------------------------------------------------
+// ============================================================
+// CONDITION - ICD CODE
+// ============================================================
 
 Ref: condition_icd_codes.condition_version_id > condition_versions.id
-
 Ref: condition_icd_codes.icd_code_id > icd_codes.id
 
 
-// ------------------------------------------------------------
-// CONDITION VERSION ↔ ATOM
-// ------------------------------------------------------------
+// ============================================================
+// INDICATOR VERSION - ATOM
+// ============================================================
 
-Ref: condition_atoms.condition_version_id > condition_versions.id
-
-Ref: condition_atoms.atom_id > atoms.id
-
-
-// ------------------------------------------------------------
-// ATOM ↔ CUI
-// ------------------------------------------------------------
-
-Ref: atom_cui.atom_id > atoms.id
-
-Ref: atom_cui.cui_id > cui.id
-
-
-// ------------------------------------------------------------
-// AUDIT LOG → USER
-// ------------------------------------------------------------
-
-Ref: audit_logs.user_id > users.id
+Ref: indicator_atoms.indicator_version_id > indicators_versions.id
+Ref: indicator_atoms.atom_id > atoms.id
