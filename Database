@@ -1,0 +1,37 @@
+from sqlalchemy.orm import Session
+
+
+with Session(engine) as session:
+
+    run = Run(
+        run_id=result["run_id"],
+        success_inference=result["success_inference"],
+        total_inference=result["total_inference"]
+    )
+
+    # Failure statistics
+    for stat in result["failure_stats"]:
+        run.failure_stats.append(
+            FailureStat(**stat)
+        )
+
+    # Individual failures
+    for failure in result["failures"]:
+        run.failures.append(
+            Failure(**failure)
+        )
+
+    # LLM throughput
+    for throughput in result["llm_throughput"]:
+        run.llm_throughput.append(
+            LLMThroughput(**throughput)
+        )
+
+    # Condition throughput
+    for throughput in result["condition_throughput"]:
+        run.condition_throughput.append(
+            ConditionThroughput(**throughput)
+        )
+
+    session.add(run)
+    session.commit()
