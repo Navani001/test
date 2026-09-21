@@ -1,831 +1,374 @@
-import enum
-import uuid
-from datetime import datetime
-from typing import Any
-
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    Enum as SAEnum,
-    ForeignKey,
-    Integer,
-    JSON,
-    String,
-    Table,
-    Text,
-    UniqueConstraint,
-    func,
-)
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-)
+import re
 
 
 # ============================================================
-# BASE
+# REGEX PATTERNS
+# Compile once instead of compiling/searching the pattern
+# repeatedly for every line.
 # ============================================================
 
-class Base(DeclarativeBase):
-    pass
-
-
-# ============================================================
-# ENUMS
-# ============================================================
-
-class IndicatorCategory(str, enum.Enum):
-    CLINICAL = "CLINICAL"
-    ADMINISTRATIVE = "ADMINISTRATIVE"
-    DIAGNOSTIC = "DIAGNOSTIC"
-    PROCEDURAL = "PROCEDURAL"
-    OTHER = "OTHER"
-
-
-class IndicatorOutput(str, enum.Enum):
-    BOOLEAN = "BOOLEAN"
-    TEXT = "TEXT"
-    NUMBER = "NUMBER"
-    DATE = "DATE"
-    ENUM = "ENUM"
-    JSON = "JSON"
-
-
-# ============================================================
-# ASSOCIATION TABLES
-# ============================================================
-
-# CONDITION - CLIENT
-condition_clients = Table(
-    "condition_clients",
-    Base.metadata,
-
-    Column(
-        "condition_id",
-        UUID(as_uuid=True),
-        ForeignKey("conditions.id"),
-        primary_key=True,
-    ),
-
-    Column(
-        "client_id",
-        UUID(as_uuid=True),
-        ForeignKey("clients.id"),
-        primary_key=True,
-    ),
+RUN_ID_RE = re.compile(
+    r"Inserted Tracker db.*?(\d+)"
 )
 
-
-# CONDITION VERSION - INDICATOR
-condition_indicators = Table(
-    "condition_indicators",
-    Base.metadata,
-
-    Column(
-        "condition_version_id",
-        UUID(as_uuid=True),
-        ForeignKey("condition_versions.id"),
-        primary_key=True,
-    ),
-
-    Column(
-        "indicator_id",
-        UUID(as_uuid=True),
-        ForeignKey("indicators.id"),
-        primary_key=True,
-    ),
+OPINION_INFERENCE_RE = re.compile(
+    r"Completed opinion inference: (\d+)/(\d+) successful"
 )
 
-
-# INDICATOR VERSION - SECTION
-indicator_sections = Table(
-    "indicator_sections",
-    Base.metadata,
-
-    Column(
-        "indicator_version_id",
-        UUID(as_uuid=True),
-        ForeignKey("indicators_versions.id"),
-        primary_key=True,
-    ),
-
-    Column(
-        "section_id",
-        UUID(as_uuid=True),
-        ForeignKey("sections.id"),
-        primary_key=True,
-    ),
+FAILURE_RE = re.compile(
+    r"LLM inference failure.*?"
+    r"request_id=(.*?),\s*"
+    r"output_type=(.*?),\s*"
+    r"task_type=(.*?),\s*"
+    r"failure_type=(.*?),\s*"
+    r"attempt=(\d+)/(\d+):\s*(.*)"
 )
 
-
-# CONDITION VERSION - ICD CODE
-condition_icd_codes = Table(
-    "condition_icd_codes",
-    Base.metadata,
-
-    Column(
-        "condition_version_id",
-        UUID(as_uuid=True),
-        ForeignKey("condition_versions.id"),
-        primary_key=True,
-    ),
-
-    Column(
-        "icd_code_id",
-        UUID(as_uuid=True),
-        ForeignKey("icd_codes.id"),
-        primary_key=True,
-    ),
+STATS_RE = re.compile(
+    r"\[Attempt\s+(\d+)\]\s+Failure stats\s*=>\s*"
+    r"max_token=(\d+),\s*"
+    r"decode=(\d+),\s*"
+    r"parse=(\d+),\s*"
+    r"schema_validation=(\d+)\s*"
+    r"malformed_table=(\d+)\s*"
+    r"\((\d+)/(\d+)\s+failed\)"
 )
 
+# Keep these patterns aligned with the actual log messages.
+# They are compiled once.
+LLM_THROUGHPUT_RE = re.compile(
+    r"LLM condition throughput.*?"
+    r"request_id=(.*?),\s*"
+    r"output_type=(.*?),\s*"
+    r"task_type=(.*?),\s*"
+    r"throughput=(.*)"
+)
 
-# INDICATOR VERSION - ATOM
-indicator_atoms = Table(
-    "indicator_atoms",
-    Base.metadata,
-
-    Column(
-        "indicator_version_id",
-        UUID(as_uuid=True),
-        ForeignKey("indicators_versions.id"),
-        primary_key=True,
-    ),
-
-    Column(
-        "atom_id",
-        UUID(as_uuid=True),
-        ForeignKey("atoms.id"),
-        primary_key=True,
-    ),
+CONDITION_THROUGHPUT_RE = re.compile(
+    r"Condition throughput.*?"
+    r"condition=(.*?),\s*"
+    r"throughput=(.*)"
 )
 
 
 # ============================================================
-# USER
+# RESULT CREATION
 # ============================================================
 
-class User(Base):
-    __tablename__ = "users"
+def create_result(include_inference=True):
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
+    result = {
+        "failures": [],
+        "failure_stats": [],
+        "llm_throughput": [],
+        "condition_throughput": [],
+    }
 
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
+    if include_inference:
+        result = {
+            "total_inference": 0,
+            "success_inference": 0,
+            "failures": [],
+            "failure_stats": [],
+            "llm_throughput": [],
+            "condition_throughput": [],
+        }
 
-    username: Mapped[str] = mapped_column(
-        String,
-        unique=True,
-        nullable=False,
-    )
-
-    password: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # User -> Conditions
-    conditions: Mapped[list["Condition"]] = relationship(
-        back_populates="user",
-    )
-
-    # User -> Condition Versions created by user
-    created_condition_versions: Mapped[
-        list["ConditionVersion"]
-    ] = relationship(
-        back_populates="created_by_user",
-    )
-
-    # User -> Audit Logs
-    audit_logs: Mapped[list["AuditLog"]] = relationship(
-        back_populates="user",
-    )
+    return result
 
 
 # ============================================================
-# CLIENT
+# PARSER
 # ============================================================
 
-class Client(Base):
-    __tablename__ = "clients"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    schema_name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    crd_id: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-    )
-
-    is_base: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Client <-> Condition
-    conditions: Mapped[list["Condition"]] = relationship(
-        secondary=condition_clients,
-        back_populates="clients",
-    )
-
-
-# ============================================================
-# CONDITION
-# ============================================================
-
-class Condition(Base):
-    __tablename__ = "conditions"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("condition_versions.id"),
-        nullable=True,
-    )
-
-    key: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id"),
-        nullable=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Condition -> User
-    user: Mapped["User"] = relationship(
-        back_populates="conditions",
-    )
-
-    # Condition <-> Client
-    clients: Mapped[list["Client"]] = relationship(
-        secondary=condition_clients,
-        back_populates="conditions",
-    )
-
-    # Condition -> Versions
-    versions: Mapped[list["ConditionVersion"]] = relationship(
-        back_populates="condition",
-        foreign_keys="ConditionVersion.condition_id",
-    )
-
-    # Condition -> Current Version
-    current_version: Mapped[
-        "ConditionVersion | None"
-    ] = relationship(
-        foreign_keys=[current_version_id],
-        post_update=True,
-    )
-
-
-# ============================================================
-# CONDITION VERSION
-# ============================================================
-
-class ConditionVersion(Base):
-    __tablename__ = "condition_versions"
-
-    __table_args__ = (
-        UniqueConstraint(
-            "condition_id",
-            "version",
-            name="uq_condition_version",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    condition_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("conditions.id"),
-        nullable=False,
-    )
-
-    version: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-    )
-
-    display_name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    is_draft: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_by: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id"),
-        nullable=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Version -> Condition
-    condition: Mapped["Condition"] = relationship(
-        back_populates="versions",
-        foreign_keys=[condition_id],
-    )
-
-    # Version -> User
-    created_by_user: Mapped["User"] = relationship(
-        back_populates="created_condition_versions",
-    )
-
-    # Condition Version <-> Indicator
-    indicators: Mapped[list["Indicator"]] = relationship(
-        secondary=condition_indicators,
-        back_populates="condition_versions",
-    )
-
-    # Condition Version <-> ICD Code
-    icd_codes: Mapped[list["ICDCode"]] = relationship(
-        secondary=condition_icd_codes,
-        back_populates="condition_versions",
-    )
-
-
-# ============================================================
-# INDICATOR
-# ============================================================
-
-class Indicator(Base):
-    __tablename__ = "indicators"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("indicators_versions.id"),
-        nullable=True,
-    )
-
-    key: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Indicator -> Versions
-    versions: Mapped[list["IndicatorVersion"]] = relationship(
-        back_populates="indicator",
-        foreign_keys="IndicatorVersion.indicator_id",
-    )
-
-    # Indicator -> Current Version
-    current_version: Mapped[
-        "IndicatorVersion | None"
-    ] = relationship(
-        foreign_keys=[current_version_id],
-        post_update=True,
-    )
-
-    # Indicator <-> Condition Version
-    condition_versions: Mapped[
-        list["ConditionVersion"]
-    ] = relationship(
-        secondary=condition_indicators,
-        back_populates="indicators",
-    )
-
-
-# ============================================================
-# INDICATOR VERSION
-# ============================================================
-
-class IndicatorVersion(Base):
-    __tablename__ = "indicators_versions"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    indicator_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("indicators.id"),
-        nullable=False,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    category: Mapped[IndicatorCategory] = mapped_column(
-        SAEnum(
-            IndicatorCategory,
-            name="indicator_category",
-        ),
-        nullable=False,
-    )
-
-    output: Mapped[IndicatorOutput] = mapped_column(
-        SAEnum(
-            IndicatorOutput,
-            name="indicator_output",
-        ),
-        nullable=False,
-    )
-
-    cui_code: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-    )
-
-    version: Mapped[int | None] = mapped_column(
-        Integer,
-        nullable=True,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    is_draft: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Indicator Version -> Indicator
-    indicator: Mapped["Indicator"] = relationship(
-        back_populates="versions",
-        foreign_keys=[indicator_id],
-    )
-
-    # Indicator Version <-> Section
-    sections: Mapped[list["Section"]] = relationship(
-        secondary=indicator_sections,
-        back_populates="indicator_versions",
-    )
-
-    # Indicator Version -> Elements
-    elements: Mapped[list["IndicatorElement"]] = relationship(
-        back_populates="indicator_version",
-    )
-
-    # Indicator Version <-> Atoms
-    atoms: Mapped[list["Atom"]] = relationship(
-        secondary=indicator_atoms,
-        back_populates="indicator_versions",
-    )
-
-
-# ============================================================
-# SECTION
-# ============================================================
-
-class Section(Base):
-    __tablename__ = "sections"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Section <-> Indicator Version
-    indicator_versions: Mapped[
-        list["IndicatorVersion"]
-    ] = relationship(
-        secondary=indicator_sections,
-        back_populates="sections",
-    )
-
-
-# ============================================================
-# INDICATOR ELEMENT
-# ============================================================
-
-class IndicatorElement(Base):
-    __tablename__ = "indicator_elements"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    indicator_version_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("indicators_versions.id"),
-        nullable=False,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Element -> Indicator Version
-    indicator_version: Mapped["IndicatorVersion"] = relationship(
-        back_populates="elements",
-    )
-
-
-# ============================================================
-# ICD CODE
-# ============================================================
-
-class ICDCode(Base):
-    __tablename__ = "icd_codes"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    code: Mapped[str] = mapped_column(
-        String,
-        unique=True,
-        nullable=False,
-    )
-
-    description: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # ICD Code <-> Condition Version
-    condition_versions: Mapped[
-        list["ConditionVersion"]
-    ] = relationship(
-        secondary=condition_icd_codes,
-        back_populates="icd_codes",
-    )
-
-
-# ============================================================
-# ATOM
-# ============================================================
-
-class Atom(Base):
-    __tablename__ = "atoms"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    description: Mapped[str] = mapped_column(
-        Text,
-        nullable=False,
-    )
-
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    # Atom <-> Indicator Version
-    indicator_versions: Mapped[
-        list["IndicatorVersion"]
-    ] = relationship(
-        secondary=indicator_atoms,
-        back_populates="atoms",
-    )
-
-
-# ============================================================
-# AUDIT LOG
-# ============================================================
-
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-
-    user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id"),
-        nullable=True,
-    )
-
-    entity_type: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    entity_key: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    action: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-    )
-
-    old_data: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON,
-        nullable=True,
-    )
-
-    new_data: Mapped[dict[str, Any] | None] = mapped_column(
-        JSON,
-        nullable=True,
-    )
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        server_default=func.now(),
-    )
-
-    # Audit Log -> User
-    user: Mapped["User | None"] = relationship(
-        back_populates="audit_logs",
-    )
+def parse_log(log_text):
+
+    key = "base"
+
+    result = create_result()
+
+    final_result = {}
+
+    # splitlines() is done only once
+    lines = log_text.splitlines()
+
+    for line in lines:
+
+        # ====================================================
+        # RUN ID
+        # ====================================================
+
+        if "Inserted Tracker db" in line:
+
+            date_time = extract_datetime(line)
+
+            match_run_id = RUN_ID_RE.search(line)
+
+            if match_run_id:
+
+                run_id = match_run_id.group(1)
+
+                final_result["run_id"] = run_id
+                final_result["created_at"] = date_time
+
+            continue
+
+
+        # ====================================================
+        # OPINION INFERENCE
+        # ====================================================
+
+        if "Completed opinion inference" in line:
+
+            date_time = extract_datetime(line)
+
+            opinion_inference_match = (
+                OPINION_INFERENCE_RE.search(line)
+            )
+
+            if opinion_inference_match:
+
+                # Keep the values as strings if your original
+                # response contains strings.
+                result["total_inference"] = (
+                    opinion_inference_match.group(2)
+                )
+
+                result["success_inference"] = (
+                    opinion_inference_match.group(1)
+                )
+
+            continue
+
+
+        # ====================================================
+        # GENERATING AGGREGATE
+        # ====================================================
+
+        if "Generating aggregate" in line:
+
+            final_result[key] = result
+
+            result = create_result(
+                include_inference=False
+            )
+
+            key = "agg"
+
+            continue
+
+
+        # ====================================================
+        # LLM FAILURE
+        # ====================================================
+
+        if "LLM inference failure" in line:
+
+            date_time = extract_datetime(line)
+
+            failure_match = FAILURE_RE.search(line)
+
+            if not failure_match:
+                continue
+
+            request_info = failure_match.group(1)
+
+            request_info_list = request_info.split(
+                "::",
+                2
+            )
+
+            # Prevent malformed log lines from crashing parser
+            if len(request_info_list) < 3:
+                continue
+
+
+            # ------------------------------------------------
+            # AGGREGATE FAILURE
+            # ------------------------------------------------
+
+            if request_info_list[0] == "agg":
+
+                current_failure = {
+                    "request_id_raw": request_info,
+                    "audit_id": request_info_list[0],
+                    "condition": request_info_list[1],
+                    "indicator": request_info_list[2],
+
+                    "is_agg": True,
+
+                    "output_type": failure_match.group(2),
+                    "task_type": failure_match.group(3).strip(),
+                    "failure_type": failure_match.group(4).strip(),
+
+                    "attempt": int(
+                        failure_match.group(5)
+                    ),
+
+                    "max_attempts": int(
+                        failure_match.group(6)
+                    ),
+
+                    "error_message": failure_match.group(7).strip(),
+
+                    "created_at": date_time,
+                }
+
+                result["failures"].append(
+                    current_failure
+                )
+
+            else:
+
+                # ------------------------------------------------
+                # NORMAL FAILURE
+                # ------------------------------------------------
+
+                current_failure = {
+                    "request_id_raw": request_info,
+                    "audit_id": request_info_list[0],
+                    "condition": request_info_list[1],
+                    "indicator": request_info_list[2],
+
+                    "is_agg": False,
+
+                    "output_type": failure_match.group(2),
+                    "task_type": failure_match.group(3).strip(),
+                    "failure_type": failure_match.group(4).strip(),
+
+                    "attempt": int(
+                        failure_match.group(5)
+                    ),
+
+                    "max_attempts": int(
+                        failure_match.group(6)
+                    ),
+
+                    "error_message": failure_match.group(7).strip(),
+
+                    "created_at": date_time,
+                }
+
+                result["failures"].append(
+                    current_failure
+                )
+
+            continue
+
+
+        # ====================================================
+        # FAILURE STATS
+        # ====================================================
+
+        if "Failure stats" in line:
+
+            date_time = extract_datetime(line)
+
+            stats_match = STATS_RE.search(line)
+
+            if stats_match:
+
+                result["failure_stats"].append({
+
+                    "attempt": int(
+                        stats_match.group(1)
+                    ),
+
+                    "max_token": int(
+                        stats_match.group(2)
+                    ),
+
+                    "decode": int(
+                        stats_match.group(3)
+                    ),
+
+                    "parse": int(
+                        stats_match.group(4)
+                    ),
+
+                    "schema_validation": int(
+                        stats_match.group(5)
+                    ),
+
+                    "malformed_table": int(
+                        stats_match.group(6)
+                    ),
+
+                    "failed": int(
+                        stats_match.group(7)
+                    ),
+
+                    "total": int(
+                        stats_match.group(8)
+                    ),
+
+                    "created_at": date_time,
+                })
+
+            continue
+
+
+        # ====================================================
+        # LLM THROUGHPUT
+        # ====================================================
+
+        if "LLM condition throughput" in line:
+
+            date_time = extract_datetime(line)
+
+            llm_match = LLM_THROUGHPUT_RE.search(line)
+
+            if llm_match:
+
+                # Adjust only the extraction fields if your
+                # actual log format differs.
+
+                llm_throughput = {
+                    "request_id": llm_match.group(1),
+                    "output_type": llm_match.group(2).strip(),
+                    "task_type": llm_match.group(3).strip(),
+                    "throughput": llm_match.group(4).strip(),
+                    "created_at": date_time,
+                }
+
+                result["llm_throughput"].append(
+                    llm_throughput
+                )
+
+            continue
+
+
+        # ====================================================
+        # CONDITION THROUGHPUT
+        # ====================================================
+
+        if "condition throughput" in line:
+
+            date_time = extract_datetime(line)
+
+            condition_match = (
+                CONDITION_THROUGHPUT_RE.search(line)
+            )
+
+            if condition_match:
+
+                conditions = {
+                    "condition": condition_match.group(1).strip(),
+                    "throughput": condition_match.group(2).strip(),
+                    "created_at": date_time,
+                }
+
+                result["condition_throughput"].append(
+                    conditions
+                )
+
+            continue
+
+
+    # ========================================================
+    # SAVE LAST RESULT
+    # ========================================================
+
+    final_result[key] = result
+
+    return final_result
