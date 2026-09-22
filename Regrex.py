@@ -1,90 +1,75 @@
-import json
-import difflib
+from datetime import datetime
 
-from parser_old import parse_log as old_parse_log
-from parser_new import parse_log as new_parse_log
+from sqlalchemy import (
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+
+from sqlalchemy.orm import Mapped, mapped_column
 
 
-def compare_outputs(old_output, new_output):
-    """
-    Compare the complete output of the old and new parsers.
+class LogFileStatus(Base):
 
-    Returns a useful diff if they are different.
-    """
+    __tablename__ = "log_file_status"
 
-    if old_output == new_output:
-        return None
-
-    old_json = json.dumps(
-        old_output,
-        indent=2,
-        sort_keys=True,
-        default=str,
-    ).splitlines()
-
-    new_json = json.dumps(
-        new_output,
-        indent=2,
-        sort_keys=True,
-        default=str,
-    ).splitlines()
-
-    diff = difflib.unified_diff(
-        old_json,
-        new_json,
-        fromfile="OLD PARSER",
-        tofile="NEW PARSER",
-        lineterm="",
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
     )
 
-    return "\n".join(diff)
-
-
-def test_old_and_new_parser_have_same_output():
-
-    # --------------------------------------------------------
-    # Read the same log for both parsers
-    # --------------------------------------------------------
-
-    with open(
-        "test_logs/sample.log",
-        "r",
-        encoding="utf-8",
-    ) as file:
-
-        log_text = file.read()
-
-
-    # --------------------------------------------------------
-    # Run OLD parser
-    # --------------------------------------------------------
-
-    old_output = old_parse_log(log_text)
-
-
-    # --------------------------------------------------------
-    # Run NEW parser
-    # --------------------------------------------------------
-
-    new_output = new_parse_log(log_text)
-
-
-    # --------------------------------------------------------
-    # Compare complete output
-    # --------------------------------------------------------
-
-    diff = compare_outputs(
-        old_output,
-        new_output,
+    s3_key: Mapped[str] = mapped_column(
+        String(1000),
+        nullable=False,
     )
 
+    etag: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
 
-    # --------------------------------------------------------
-    # Fail test if ANY difference exists
-    # --------------------------------------------------------
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="PENDING",
+    )
 
-    assert diff is None, (
-        "\n\n"
-        "OLD PARSER AND NEW PARSER PRODUCED DIFFERENT OUTPUT!\n\n"
-        f"{diff}"
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "s3_key",
+            "etag",
+            name="uq_log_file_s3_key_etag",
+        ),
     )
