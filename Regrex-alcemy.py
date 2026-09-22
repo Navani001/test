@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import (
     BigInteger,
     DateTime,
@@ -10,10 +12,12 @@ from sqlalchemy import (
 
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.database import Base
 
-class ParsedFailure(Base):
 
-    __tablename__ = "parsed_failures"
+class LogFile(Base):
+
+    __tablename__ = "log_files"
 
     id: Mapped[int] = mapped_column(
         BigInteger,
@@ -21,54 +25,71 @@ class ParsedFailure(Base):
         autoincrement=True,
     )
 
-    log_file_id: Mapped[int] = mapped_column(
-        BigInteger,
+    bucket: Mapped[str] = mapped_column(
+        String(255),
         nullable=False,
     )
 
-    indicator: Mapped[str | None] = mapped_column(
+    s3_key: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    etag: Mapped[str] = mapped_column(
         String(255),
+        nullable=False,
+    )
+
+    file_size: Mapped[int | None] = mapped_column(
+        BigInteger,
         nullable=True,
     )
 
-    failure_type: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="PENDING",
     )
 
-    output_type: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    attempts: Mapped[int | None] = mapped_column(
+    attempts: Mapped[int] = mapped_column(
         Integer,
+        nullable=False,
+        default=0,
+    )
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 
-    max_attempts: Mapped[int | None] = mapped_column(
-        Integer,
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 
-    message: Mapped[str | None] = mapped_column(
+    error_message: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
     )
 
-    created_at: Mapped[DateTime] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
     )
 
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
     __table_args__ = (
         UniqueConstraint(
-            "log_file_id",
-            "indicator",
-            "failure_type",
-            "output_type",
-            name="uq_parsed_failure",
+            "bucket",
+            "s3_key",
+            "etag",
+            name="uq_log_file",
         ),
     )
-    
