@@ -1,379 +1,223 @@
-Enum indicator_category {
-  CLINICAL
-  ADMINISTRATIVE
-  DIAGNOSTIC
-  PROCEDURAL
-  OTHER
-}
+from datetime import datetime, timezone
 
-Enum indicator_output {
-  BOOLEAN
-  TEXT
-  NUMBER
-  DATE
-  ENUM
-  JSON
-}
+from sqlalchemy import select
 
+from s3_service import S3Service
 
-// ============================================================
-// USER
-// ============================================================
+# Your existing SQLAlchemy session
+from database import SessionLocal
 
-Table users {
-  id uuid [pk]
+# Your existing model
+from models import LogFileStatus
 
-  name varchar
-  username varchar [unique]
-  password varchar
+# Your existing parser
+from parser import parse_log
 
-  is_active boolean
+# Your existing DB update function
+from database_operations import update_database
 
-  created_at timestamp
-  updated_at timestamp
-}
 
+S3_BUCKET = "your-bucket-name"
 
-// ============================================================
-// CLIENT
-// ============================================================
+S3_PREFIX = "logs/"
 
-Table clients {
-  id uuid [pk]
+AWS_REGION = "ap-south-1"
 
-  name varchar
-  schema_name varchar
-  crd_id int
 
-  is_base boolean
-  is_active boolean
+def get_log_status(
+    session,
+    s3_key: str,
+    etag: str,
+):
 
-  created_at timestamp
-  updated_at timestamp
-}
+    return session.scalar(
+        select(LogFileStatus).where(
+            LogFileStatus.s3_key == s3_key,
+            LogFileStatus.etag == etag,
+        )
+    )
 
 
-// ============================================================
-// CONDITION
-// ============================================================
+def create_or_get_log_status(
+    session,
+    s3_key: str,
+    etag: str,
+):
 
-Table conditions {
-  id uuid [pk]
+    log_status = get_log_status(
+        session,
+        s3_key,
+        etag,
+    )
 
-  current_version_id uuid [null]
+    if log_status:
+        return log_status
 
-  key varchar
+    log_status = LogFileStatus(
+        s3_key=s3_key,
+        etag=etag,
+        status="PENDING",
+        attempts=0,
+    )
 
-  is_active boolean
-  user_id uuid
+    session.add(log_status)
 
-  created_at timestamp
-  updated_at timestamp
-}
+    session.flush()
 
+    return log_status
 
-// ============================================================
-// CONDITION - CLIENT
-// ============================================================
 
-Table condition_clients {
-  condition_id uuid [not null]
-  client_id uuid [not null]
+def process_logs():
 
-  indexes {
-    (condition_id, client_id) [pk]
-  }
-}
+    s3 = S3Service(
+        bucket_name=S3_BUCKET,
+        prefix=S3_PREFIX,
+        region_name=AWS_REGION,
+    )
 
+    with SessionLocal() as session:
 
-// ============================================================
-// CONDITION VERSION
-// ============================================================
+        for log in s3.list_logs():
 
-Table condition_versions {
-  id uuid [pk]
+            s3_key = log["key"]
+            etag = log["etag"]
 
-  condition_id uuid [not null]
+            print(
+                f"Checking S3 log: {s3_key}"
+            )
 
-  version int [not null]
-  display_name varchar
+            # -----------------------------------------
+            # Get status from database
+            # -----------------------------------------
 
-  is_draft boolean
-  is_active boolean
+            log_status = get_log_status(
+                session,
+                s3_key,
+                etag,
+            )
 
-  created_by uuid [not null]
+            # -----------------------------------------
+            # Already processed
+            # -----------------------------------------
 
-  created_at timestamp
-  updated_at timestamp
+            if (
+                log_status
+                and log_status.status == "COMPLETED"
+            ):
 
-  indexes {
-    (condition_id, version) [unique]
-  }
-}
+                print(
+                    f"Already processed: {s3_key}"
+                )
 
+                continue
 
-// ============================================================
-// INDICATOR
-// ============================================================
+            try:
 
-Table indicators {
-  id uuid [pk]
+                # -------------------------------------
+                # Create tracking record if necessary
+                # -------------------------------------
 
-  current_version_id uuid [null]
+                if log_status is None:
 
-  key varchar
+                    log_status = create_or_get_log_status(
+                        session,
+                        s3_key,
+                        etag,
+                    )
 
-  is_active boolean
+                # -------------------------------------
+                # Mark PROCESSING
+                # -------------------------------------
 
-  created_at timestamp
-  updated_at timestamp
-}
+                log_status.status = "PROCESSING"
 
+                log_status.attempts += 1
 
-// ============================================================
-// INDICATOR VERSION
-// ============================================================
+                log_status.error_message = None
 
-Table indicators_versions {
-  id uuid [pk]
+                session.commit()
 
-  indicator_id uuid [not null]
+                # -------------------------------------
+                # Download from S3
+                # -------------------------------------
 
-  name varchar
+                print(
+                    f"Downloading: {s3_key}"
+                )
 
-  category indicator_category
-  output indicator_output
+                content = s3.download_log(
+                    s3_key
+                )
 
-  cui_code varchar [null]
+                # -------------------------------------
+                # YOUR EXISTING PARSER
+                # -------------------------------------
 
-  version int [null]
+                parsed_data = parse_log(
+                    content
+                )
 
-  is_active boolean
-  is_draft boolean
+                # -------------------------------------
+                # YOUR EXISTING DATABASE UPDATE
+                # -------------------------------------
 
-  created_at timestamp
-  updated_at timestamp
-}
+                update_database(
+                    session,
+                    parsed_data,
+                )
 
+                # -------------------------------------
+                # Mark COMPLETED
+                # -------------------------------------
 
-// ============================================================
-// CONDITION - INDICATOR
-// ============================================================
+                log_status.status = "COMPLETED"
 
-Table condition_indicators {
-  condition_version_id uuid [not null]
-  indicator_id uuid [not null]
+                log_status.processed_at = (
+                    datetime.now(timezone.utc)
+                )
 
-  indexes {
-    (condition_version_id, indicator_id) [pk]
-  }
-}
+                log_status.error_message = None
 
+                session.commit()
 
-// ============================================================
-// SECTION
-// ============================================================
+                print(
+                    f"Successfully processed: "
+                    f"{s3_key}"
+                )
 
-Table sections {
-  id uuid [pk]
+            except Exception as exc:
 
-  name varchar
+                # -------------------------------------
+                # Rollback parser/database transaction
+                # -------------------------------------
 
-  created_at timestamp
-  updated_at timestamp
-}
+                session.rollback()
 
+                print(
+                    f"Failed processing "
+                    f"{s3_key}: {exc}"
+                )
 
-// ============================================================
-// INDICATOR - SECTION
-// ============================================================
+                # -------------------------------------
+                # Update status to FAILED
+                # -------------------------------------
 
-Table indicator_sections {
-  indicator_version_id uuid [not null]
-  section_id uuid [not null]
+                log_status = get_log_status(
+                    session,
+                    s3_key,
+                    etag,
+                )
 
-  indexes {
-    (indicator_version_id, section_id) [pk]
-  }
-}
+                if log_status:
 
+                    log_status.status = "FAILED"
 
-// ============================================================
-// INDICATOR ELEMENT
-// ============================================================
+                    log_status.error_message = str(
+                        exc
+                    )[:5000]
 
-Table indicator_elements {
-  id uuid [pk]
+                    session.commit()
 
-  indicator_version_id uuid [not null]
 
-  name varchar
-
-  created_at timestamp
-  updated_at timestamp
-}
-
-
-// ============================================================
-// ICD CODE
-// ============================================================
-
-Table icd_codes {
-  id uuid [pk]
-
-  code varchar [unique]
-  description varchar
-
-  is_active boolean
-
-  created_at timestamp
-  updated_at timestamp
-}
-
-
-// ============================================================
-// CONDITION - ICD CODE
-// ============================================================
-
-Table condition_icd_codes {
-  condition_version_id uuid [not null]
-  icd_code_id uuid [not null]
-
-  indexes {
-    (condition_version_id, icd_code_id) [pk]
-  }
-}
-
-
-// ============================================================
-// ATOM
-// ============================================================
-
-Table atoms {
-  id uuid [pk]
-
-  name varchar
-  description text
-
-  is_active boolean
-
-  created_at timestamp
-  updated_at timestamp
-}
-
-
-// ============================================================
-// INDICATOR VERSION - ATOM
-// ============================================================
-
-Table indicator_atoms {
-  indicator_version_id uuid [not null]
-  atom_id uuid [not null]
-
-  indexes {
-    (indicator_version_id, atom_id) [pk]
-  }
-}
-
-
-// ============================================================
-// AUDIT LOG
-// ============================================================
-
-Table audit_logs {
-  id uuid [pk]
-
-  user_id uuid [null]
-
-  entity_type varchar [not null]
-  entity_key varchar [not null]
-
-  action varchar [not null]
-
-  old_data json
-  new_data json
-
-  created_at timestamp
-}
-
-
-// ============================================================
-// REFERENCES
-// ============================================================
-
-// ============================================================
-// CLIENT
-// ============================================================
-
-Ref: condition_clients.condition_id > conditions.id
-Ref: condition_clients.client_id > clients.id
-
-
-// ============================================================
-// USER
-// ============================================================
-
-Ref: conditions.user_id > users.id
-Ref: condition_versions.created_by > users.id
-Ref: audit_logs.user_id > users.id
-
-
-// ============================================================
-// CONDITION VERSION
-// ============================================================
-
-Ref: condition_versions.condition_id > conditions.id
-Ref: conditions.current_version_id > condition_versions.id
-
-
-// ============================================================
-// CONDITION - INDICATOR
-// ============================================================
-
-Ref: condition_indicators.condition_version_id > condition_versions.id
-Ref: condition_indicators.indicator_id > indicators.id
-
-
-// ============================================================
-// INDICATOR
-// ============================================================
-
-Ref: indicators.current_version_id > indicators_versions.id
-
-
-// ============================================================
-// INDICATOR VERSION
-// ============================================================
-
-Ref: indicators_versions.indicator_id > indicators.id
-
-
-// ============================================================
-// INDICATOR VERSION - SECTION
-// ============================================================
-
-Ref: indicator_sections.indicator_version_id > indicators_versions.id
-Ref: indicator_sections.section_id > sections.id
-
-
-// ============================================================
-// INDICATOR ELEMENT
-// ============================================================
-
-Ref: indicator_elements.indicator_version_id > indicators_versions.id
-
-
-// ============================================================
-// CONDITION - ICD CODE
-// ============================================================
-
-Ref: condition_icd_codes.condition_version_id > condition_versions.id
-Ref: condition_icd_codes.icd_code_id > icd_codes.id
-
-
-// ============================================================
-// INDICATOR VERSION - ATOM
-// ============================================================
-
-Ref: indicator_atoms.indicator_version_id > indicators_versions.id
-Ref: indicator_atoms.atom_id > atoms.id
+if __name__ == "__main__":
+    process_logs()
