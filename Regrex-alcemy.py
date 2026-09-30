@@ -1,49 +1,120 @@
 import re
-import csv
+import html
 from rapidfuzz.fuzz import ratio
 
 
-# ---------------------------------------------------------
-# 1. TEXT NORMALIZATION
-# ---------------------------------------------------------
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+MIN_SPATIAL_COVERAGE = 0.90
+MIN_TEXT_COVERAGE = 0.90
+
+# For fuzzy matching individual words
+WORD_SIMILARITY_THRESHOLD = 0.85
+
+
+# ============================================================
+# TEXT NORMALIZATION
+# ============================================================
 
 def normalize_text(text):
     """
-    Normalize OCR text so that differences in:
-    - case
-    - whitespace
-    - newlines
-    - repeated spaces
-    don't affect comparison.
-    """
-    text = str(text).lower()
+    Normalize OCR text for comparison.
 
-    # Replace newlines/tabs with spaces
+    Important:
+    HTML/XML tags are replaced with spaces, NOT simply removed.
+
+    Example:
+
+        <td>Name</td><td>John</td>
+
+    becomes:
+
+        name john
+    """
+
+    if text is None:
+        return ""
+
+    text = str(text)
+
+    # Decode HTML entities
+    #
+    # &amp;   -> &
+    # &lt;    -> <
+    # &#39;   -> '
+    #
+    text = html.unescape(text)
+
+    # Replace HTML/XML tags with spaces
+    #
+    # <table>
+    # <tr>
+    # <td>
+    # </td>
+    #
+    # all become spaces.
+    text = re.sub(r"<[^>]*>", " ", text)
+
+    # Lowercase
+    text = text.lower()
+
+    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
 
-    # Remove leading/trailing whitespace
-    text = text.strip()
+    # Remove unnecessary spaces before punctuation
+    text = re.sub(r"\s+([,.:;!?])", r"\1", text)
 
-    return text
+    return text.strip()
 
 
-# ---------------------------------------------------------
-# 2. BBOX FUNCTIONS
-# ---------------------------------------------------------
+# ============================================================
+# TABLE DETECTION
+# ============================================================
+
+def is_table_content(text):
+    """
+    Detect whether a Baidu OCR block contains table markup.
+    """
+
+    if not text:
+        return False
+
+    text = str(text).lower()
+
+    return (
+        "<table" in text
+        or "</table>" in text
+    )
+
+
+# ============================================================
+# BOUNDING BOX FUNCTIONS
+# ============================================================
 
 def bbox_area(box):
+    """
+    box format:
+
+        [x1, y1, x2, y2]
+    """
+
+    if not box or len(box) != 4:
+        return 0
+
     x1, y1, x2, y2 = box
 
-    width = max(0, x2 - x1)
-    height = max(0, y2 - y1)
-
-    return width * height
+    return max(0, x2 - x1) * max(0, y2 - y1)
 
 
-def intersection(box1, box2):
+def intersection_area(box1, box2):
     """
-    Returns intersection rectangle.
+    Calculate intersection area of two bounding boxes.
     """
+
+    if not box1 or not box2:
+        return 0
 
     x1 = max(box1[0], box2[0])
     y1 = max(box1[1], box2[1])
@@ -52,393 +123,935 @@ def intersection(box1, box2):
     y2 = min(box1[3], box2[3])
 
     if x2 <= x1 or y2 <= y1:
-        return None
-
-    return [x1, y1, x2, y2]
-
-
-def intersection_area(box1, box2):
-
-    inter = intersection(box1, box2)
-
-    if inter is None:
         return 0
 
-    return bbox_area(inter)
+    return (x2 - x1) * (y2 - y1)
 
 
-def containment(textract_box, baidu_box):
+def textract_coverage(textract_box, baidu_box):
     """
-    Percentage of the Textract box covered by Baidu box.
+    Calculate how much of the Textract box is covered
+    by the Baidu box.
 
-    This is NOT IoU.
+    This is intentionally NOT IoU.
 
-    If Textract box is completely inside Baidu box:
-        containment = 1.0
+    Example:
+
+        Textract:
+        ┌─────────┐
+        │         │
+        └─────────┘
+
+        Baidu:
+        ┌───────────────────────┐
+        │   ┌─────────┐         │
+        │   │Textract │         │
+        │   └─────────┘         │
+        └───────────────────────┘
+
+    Result = 1.0 if Textract is completely covered.
     """
 
     textract_area = bbox_area(textract_box)
 
     if textract_area == 0:
-        return 0
+        return 0.0
 
-    inter_area = intersection_area(
+    overlap = intersection_area(
         textract_box,
         baidu_box
     )
 
-    return inter_area / textract_area
+    return overlap / textract_area
 
 
-# ---------------------------------------------------------
-# 3. TEXT MATCHING
-# ---------------------------------------------------------
+# ============================================================
+# TEXT COVERAGE
+# ============================================================
 
-def text_similarity(textract_text, baidu_text):
+def text_coverage(textract_text, baidu_text):
     """
-    Basic fuzzy similarity.
-    """
+    Calculate how much of Textract's text is represented
+    inside the Baidu text.
 
-    a = normalize_text(textract_text)
-    b = normalize_text(baidu_text)
-
-    if not a or not b:
-        return 0
-
-    return ratio(a, b) / 100.0
-
-
-def text_is_contained(textract_text, baidu_text):
-    """
-    Checks whether Textract's text occurs inside
-    the Baidu block.
-
-    This is particularly useful because:
-
-        Textract = individual line
-        Baidu    = complete paragraph
+    Because Baidu can contain a complete paragraph while
+    Textract contains individual lines, exact substring
+    matching is attempted first.
     """
 
-    a = normalize_text(textract_text)
-    b = normalize_text(baidu_text)
+    textract_text = normalize_text(textract_text)
+    baidu_text = normalize_text(baidu_text)
 
-    return a in b
+    if not textract_text:
+        return 0.0
+
+    if not baidu_text:
+        return 0.0
+
+    # --------------------------------------------------------
+    # Best case:
+    #
+    # Entire Textract line exists in Baidu paragraph.
+    # --------------------------------------------------------
+
+    if textract_text in baidu_text:
+        return 1.0
+
+    # --------------------------------------------------------
+    # Token-level fuzzy matching
+    # --------------------------------------------------------
+
+    textract_words = textract_text.split()
+    baidu_words = baidu_text.split()
+
+    if not textract_words:
+        return 0.0
+
+    matched_words = 0
+
+    for textract_word in textract_words:
+
+        best_score = 0.0
+
+        for baidu_word in baidu_words:
+
+            score = ratio(
+                textract_word,
+                baidu_word
+            ) / 100.0
+
+            if score > best_score:
+                best_score = score
+
+        if best_score >= WORD_SIMILARITY_THRESHOLD:
+            matched_words += 1
+
+    return matched_words / len(textract_words)
 
 
-# ---------------------------------------------------------
-# 4. FIND BEST BAIDU MATCH
-# ---------------------------------------------------------
+# ============================================================
+# FIND BEST BAIDU MATCH
+# ============================================================
 
 def find_best_match(
     textract_item,
-    baidu_items,
-    min_spatial_coverage=0.80,
-    min_text_similarity=0.80
+    baidu_data,
+    min_spatial=MIN_SPATIAL_COVERAGE,
+    min_text=MIN_TEXT_COVERAGE
 ):
+    """
+    Find the Baidu block that best represents a Textract item.
 
-    textract_text = textract_item["text"]
-    textract_box = textract_item["bbox"]
+    Multiple Textract lines are allowed to match the same
+    Baidu block.
+    """
+
+    textract_text = textract_item.get(
+        "content",
+        ""
+    )
+
+    textract_box = textract_item.get(
+        "coor"
+    )
 
     candidates = []
 
-    for idx, baidu_item in enumerate(baidu_items):
+    for baidu_index, baidu_item in enumerate(baidu_data):
 
-        baidu_box = baidu_item["bbox"]
-        baidu_text = baidu_item["text"]
+        baidu_text = baidu_item.get(
+            "content",
+            ""
+        )
 
-        # -----------------------------
+        baidu_box = baidu_item.get(
+            "coor"
+        )
+
+        # ----------------------------------------------------
         # Spatial coverage
-        # -----------------------------
+        # ----------------------------------------------------
 
-        coverage = containment(
+        spatial = textract_coverage(
             textract_box,
             baidu_box
         )
 
-        if coverage < min_spatial_coverage:
+        # Completely unrelated spatial region
+        if spatial < min_spatial:
             continue
 
-        # -----------------------------
-        # Text containment
-        # -----------------------------
+        # ----------------------------------------------------
+        # Text coverage
+        # ----------------------------------------------------
 
-        exact_contained = text_is_contained(
+        text_score = text_coverage(
             textract_text,
             baidu_text
         )
 
-        # -----------------------------
-        # Fuzzy similarity
-        # -----------------------------
+        # ----------------------------------------------------
+        # Combined score
+        # ----------------------------------------------------
 
-        similarity = text_similarity(
-            textract_text,
-            baidu_text
+        combined_score = (
+            0.6 * text_score
+            +
+            0.4 * spatial
         )
-
-        # If exact text occurs in the larger
-        # Baidu paragraph, give it maximum text score.
-        if exact_contained:
-            similarity = 1.0
-
-        if similarity < min_text_similarity:
-            continue
 
         candidates.append({
-            "baidu_index": idx,
-            "spatial_coverage": coverage,
-            "text_similarity": similarity,
-            "text_contained": exact_contained
+            "baidu_index": baidu_index,
+            "spatial_coverage": spatial,
+            "text_coverage": text_score,
+            "combined_score": combined_score,
         })
 
     if not candidates:
         return None
 
-    # -----------------------------------------------------
-    # Select the best candidate.
-    #
-    # Prioritize text similarity and spatial coverage.
-    # -----------------------------------------------------
-
+    # Best candidate
     candidates.sort(
-        key=lambda x: (
-            x["text_similarity"],
-            x["spatial_coverage"]
-        ),
+        key=lambda x: x["combined_score"],
         reverse=True
     )
 
-    return candidates[0]
+    best = candidates[0]
+
+    # Final match condition
+    best["matched"] = (
+        best["spatial_coverage"] >= min_spatial
+        and
+        best["text_coverage"] >= min_text
+    )
+
+    return best
 
 
-# ---------------------------------------------------------
-# 5. EVALUATE
-# ---------------------------------------------------------
+# ============================================================
+# COMPLETE EVALUATOR
+# ============================================================
 
-def evaluate(textract_items, baidu_items):
+def evaluate_ocr(
+    textract_data,
+    baidu_data
+):
+    """
+    Main evaluation function.
+
+    Input format:
+
+    Textract:
+    [
+        {
+            "content": "...",
+            "coor": [x1, y1, x2, y2]
+        }
+    ]
+
+    Baidu:
+    [
+        {
+            "content": "...",
+            "coor": [x1, y1, x2, y2]
+        }
+    ]
+    """
 
     results = []
 
-    matched_count = 0
+    for textract_index, textract_item in enumerate(
+        textract_data
+    ):
 
-    total_spatial_coverage = 0
-    total_text_similarity = 0
+        content = textract_item.get(
+            "content",
+            ""
+        )
 
-    for textract_index, textract_item in enumerate(textract_items):
+        # Ignore empty OCR elements
+        if not normalize_text(content):
+            continue
+
+        # Ignore explicit NO TEXT
+        if normalize_text(content) == "no text":
+            continue
 
         match = find_best_match(
             textract_item,
-            baidu_items
+            baidu_data
         )
 
-        if match:
+        # ----------------------------------------------------
+        # No match
+        # ----------------------------------------------------
 
-            matched = True
-
-            matched_count += 1
-
-            total_spatial_coverage += (
-                match["spatial_coverage"]
-            )
-
-            total_text_similarity += (
-                match["text_similarity"]
-            )
+        if match is None:
 
             results.append({
-                "textract_index": textract_index,
-                "textract_text": textract_item["text"],
-                "textract_bbox": textract_item["bbox"],
 
-                "baidu_index": match["baidu_index"],
+                "textract_index":
+                    textract_index,
+
+                "textract_content":
+                    content,
+
+                "textract_coor":
+                    textract_item.get("coor"),
+
+                "baidu_index":
+                    None,
+
+                "baidu_content":
+                    None,
+
+                "baidu_coor":
+                    None,
+
+                "baidu_is_table":
+                    False,
 
                 "spatial_coverage":
-                    match["spatial_coverage"],
+                    0.0,
 
-                "text_similarity":
-                    match["text_similarity"],
+                "text_coverage":
+                    0.0,
 
-                "text_contained":
-                    match["text_contained"],
+                "combined_score":
+                    0.0,
 
-                "matched": True
+                "matched":
+                    False
             })
 
-        else:
+            continue
 
-            results.append({
-                "textract_index": textract_index,
-                "textract_text": textract_item["text"],
-                "textract_bbox": textract_item["bbox"],
+        # ----------------------------------------------------
+        # Matched Baidu item
+        # ----------------------------------------------------
 
-                "baidu_index": None,
+        baidu_index = match["baidu_index"]
 
-                "spatial_coverage": 0,
+        matched_baidu = baidu_data[
+            baidu_index
+        ]
 
-                "text_similarity": 0,
+        results.append({
 
-                "text_contained": False,
+            "textract_index":
+                textract_index,
 
-                "matched": False
-            })
+            "textract_content":
+                content,
 
-    total = len(textract_items)
+            "textract_coor":
+                textract_item.get("coor"),
 
-    if total > 0:
+            "baidu_index":
+                baidu_index,
 
-        coverage_percentage = (
-            matched_count / total
+            "baidu_content":
+                matched_baidu.get("content"),
+
+            "baidu_coor":
+                matched_baidu.get("coor"),
+
+            "baidu_is_table":
+                is_table_content(
+                    matched_baidu.get("content")
+                ),
+
+            "spatial_coverage":
+                match["spatial_coverage"],
+
+            "text_coverage":
+                match["text_coverage"],
+
+            "combined_score":
+                match["combined_score"],
+
+            "matched":
+                match["matched"]
+        })
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    total = len(results)
+
+    matched = sum(
+        1
+        for result in results
+        if result["matched"]
+    )
+
+    missing = total - matched
+
+    if total:
+        match_percentage = (
+            matched / total
+        ) * 100
+    else:
+        match_percentage = 0.0
+
+    # --------------------------------------------------------
+    # Average spatial coverage
+    # --------------------------------------------------------
+
+    if results:
+
+        average_spatial = (
+            sum(
+                result["spatial_coverage"]
+                for result in results
+            )
+            / len(results)
+        )
+
+    else:
+
+        average_spatial = 0.0
+
+    # --------------------------------------------------------
+    # Average text coverage
+    # --------------------------------------------------------
+
+    if results:
+
+        average_text = (
+            sum(
+                result["text_coverage"]
+                for result in results
+            )
+            / len(results)
+        )
+
+    else:
+
+        average_text = 0.0
+
+    # --------------------------------------------------------
+    # Table-specific statistics
+    # --------------------------------------------------------
+
+    table_results = [
+        result
+        for result in results
+        if result["baidu_is_table"]
+    ]
+
+    table_matched = sum(
+        1
+        for result in table_results
+        if result["matched"]
+    )
+
+    if table_results:
+
+        table_match_percentage = (
+            table_matched
+            /
+            len(table_results)
         ) * 100
 
     else:
 
-        coverage_percentage = 0
-
-    matched_items = [
-        r for r in results
-        if r["matched"]
-    ]
-
-    if matched_items:
-
-        avg_spatial_coverage = (
-            sum(
-                r["spatial_coverage"]
-                for r in matched_items
-            )
-            / len(matched_items)
-        )
-
-        avg_text_similarity = (
-            sum(
-                r["text_similarity"]
-                for r in matched_items
-            )
-            / len(matched_items)
-        )
-
-    else:
-
-        avg_spatial_coverage = 0
-        avg_text_similarity = 0
+        table_match_percentage = 0.0
 
     summary = {
 
-        "textract_items": total,
+        "total_textract_items":
+            total,
 
-        "matched_items": matched_count,
+        "matched_items":
+            matched,
 
         "missing_items":
-            total - matched_count,
+            missing,
 
-        "coverage_percentage":
-            coverage_percentage,
+        "content_spatial_match_percentage":
+            round(match_percentage, 2),
 
         "average_spatial_coverage":
-            avg_spatial_coverage * 100,
+            round(
+                average_spatial * 100,
+                2
+            ),
 
-        "average_text_similarity":
-            avg_text_similarity * 100
+        "average_text_coverage":
+            round(
+                average_text * 100,
+                2
+            ),
+
+        "table_related_textract_items":
+            len(table_results),
+
+        "table_matched_items":
+            table_matched,
+
+        "table_match_percentage":
+            round(
+                table_match_percentage,
+                2
+            )
     }
 
     return summary, results
 
 
-# ---------------------------------------------------------
-# 6. SAVE DETAILS TO CSV
-# ---------------------------------------------------------
+# ============================================================
+# PRINT RESULTS
+# ============================================================
 
-def save_results_csv(results, filename):
+def print_evaluation(summary, results):
 
-    fieldnames = [
-        "textract_index",
-        "textract_text",
-        "textract_bbox",
-        "baidu_index",
-        "spatial_coverage",
-        "text_similarity",
-        "text_contained",
-        "matched"
-    ]
-
-    with open(
-        filename,
-        "w",
-        newline="",
-        encoding="utf-8"
-    ) as f:
-
-        writer = csv.DictWriter(
-            f,
-            fieldnames=fieldnames
-        )
-
-        writer.writeheader()
-
-        writer.writerows(results)
-
-
-# =========================================================
-# EXAMPLE
-# =========================================================
-
-if __name__ == "__main__":
-
-    textract = [
-
-        {
-            "text": "Patient Name: John Smith",
-            "bbox": [100, 100, 400, 130]
-        },
-
-        {
-            "text": "DOB: 01/01/1985",
-            "bbox": [100, 140, 300, 170]
-        },
-
-        {
-            "text": "Address: Chennai",
-            "bbox": [100, 180, 300, 210]
-        }
-    ]
-
-    baidu = [
-
-        {
-            "text": """
-            Patient Name: John Smith
-            DOB: 01/01/1985
-            Address: Chennai
-            """,
-
-            "bbox": [90, 90, 500, 230]
-        }
-    ]
-
-    summary, results = evaluate(
-        textract,
-        baidu
-    )
-
-    print("\n========== SUMMARY ==========\n")
+    print()
+    print("=" * 70)
+    print("OCR EVALUATION SUMMARY")
+    print("=" * 70)
 
     for key, value in summary.items():
 
         print(
-            f"{key}: {value}"
+            f"{key:40} : {value}"
         )
 
-    print("\n========== DETAILS ==========\n")
+    print()
+    print("=" * 70)
+    print("DETAILED RESULTS")
+    print("=" * 70)
 
     for result in results:
 
-        print(result)
+        print()
+        print(
+            f"Textract [{result['textract_index']}]"
+        )
 
-    save_results_csv(
-        results,
-        "ocr_comparison.csv"
+        print(
+            f"  Text      : "
+            f"{result['textract_content']}"
+        )
+
+        print(
+            f"  Baidu     : "
+            f"{result['baidu_content']}"
+        )
+
+        print(
+            f"  Spatial   : "
+            f"{result['spatial_coverage']:.2%}"
+        )
+
+        print(
+            f"  Text      : "
+            f"{result['text_coverage']:.2%}"
+        )
+
+        print(
+            f"  Table     : "
+            f"{result['baidu_is_table']}"
+        )
+
+        print(
+            f"  MATCHED   : "
+            f"{result['matched']}"
+        )
+
+
+# ============================================================
+# TEST DATA
+# ============================================================
+
+def create_test_data():
+
+    # --------------------------------------------------------
+    # TEXTRACT
+    #
+    # Textract produces lines.
+    # --------------------------------------------------------
+
+    textract = [
+
+        # ----------------------------------------------------
+        # TEST 1
+        # Normal paragraph
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "Patient Name: John Smith",
+
+            "coor":
+                [100, 100, 400, 125]
+        },
+
+        {
+            "content":
+                "Date of Birth: 01/01/1985",
+
+            "coor":
+                [100, 130, 400, 155]
+        },
+
+        # ----------------------------------------------------
+        # TEST 2
+        # Multiple Textract lines that belong to
+        # one Baidu paragraph.
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "The patient visited the hospital",
+
+            "coor":
+                [100, 200, 500, 225]
+        },
+
+        {
+            "content":
+                "for a routine medical examination.",
+
+            "coor":
+                [100, 230, 500, 255]
+        },
+
+        {
+            "content":
+                "No abnormal findings were reported.",
+
+            "coor":
+                [100, 260, 500, 285]
+        },
+
+        # ----------------------------------------------------
+        # TEST 3
+        # Table content
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "Name",
+
+            "coor":
+                [100, 350, 200, 375]
+        },
+
+        {
+            "content":
+                "John Smith",
+
+            "coor":
+                [200, 350, 400, 375]
+        },
+
+        {
+            "content":
+                "DOB",
+
+            "coor":
+                [100, 380, 200, 405]
+        },
+
+        {
+            "content":
+                "01/01/1985",
+
+            "coor":
+                [200, 380, 400, 405]
+        },
+
+        # ----------------------------------------------------
+        # TEST 4
+        # OCR typo
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "Healthcare",
+
+            "coor":
+                [100, 450, 300, 475]
+        },
+
+        # ----------------------------------------------------
+        # TEST 5
+        # This should be MISSING
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "This content does not exist in Baidu.",
+
+            "coor":
+                [100, 550, 500, 575]
+        }
+    ]
+
+    # --------------------------------------------------------
+    # BAIDU
+    #
+    # Baidu produces larger complete blocks.
+    # --------------------------------------------------------
+
+    baidu = [
+
+        # ----------------------------------------------------
+        # Paragraph block
+        # Contains two Textract lines.
+        # ----------------------------------------------------
+
+        {
+            "content":
+                """
+                Patient Name: John Smith
+                Date of Birth: 01/01/1985
+                """,
+
+            "coor":
+                [90, 90, 550, 175]
+        },
+
+        # ----------------------------------------------------
+        # One Baidu block containing THREE Textract lines.
+        # ----------------------------------------------------
+
+        {
+            "content":
+                """
+                The patient visited the hospital
+                for a routine medical examination.
+                No abnormal findings were reported.
+                """,
+
+            "coor":
+                [90, 190, 550, 300]
+        },
+
+        # ----------------------------------------------------
+        # TABLE
+        #
+        # This tests <table>...</table>
+        # ----------------------------------------------------
+
+        {
+            "content":
+                """
+                <table>
+                    <tr>
+                        <td>Name</td>
+                        <td>John Smith</td>
+                    </tr>
+                    <tr>
+                        <td>DOB</td>
+                        <td>01/01/1985</td>
+                    </tr>
+                </table>
+                """,
+
+            "coor":
+                [90, 340, 450, 420]
+        },
+
+        # ----------------------------------------------------
+        # OCR typo
+        #
+        # Textract:
+        # Healthcare
+        #
+        # Baidu:
+        # Healthcar
+        # ----------------------------------------------------
+
+        {
+            "content":
+                "Healthcar",
+
+            "coor":
+                [95, 445, 320, 480]
+        }
+
+        # No block for the final Textract item.
+    ]
+
+    return textract, baidu
+
+
+# ============================================================
+# TESTS
+# ============================================================
+
+def run_tests():
+
+    print()
+    print("=" * 70)
+    print("RUNNING TESTS")
+    print("=" * 70)
+
+    textract, baidu = create_test_data()
+
+    summary, results = evaluate_ocr(
+        textract,
+        baidu
+    )
+
+    # ========================================================
+    # TEST 1
+    # Normal text
+    # ========================================================
+
+    result = results[0]
+
+    assert result["matched"] is True, (
+        "TEST 1 FAILED: Patient Name should match"
+    )
+
+    assert result["text_coverage"] == 1.0, (
+        "TEST 1 FAILED: text should be exact"
+    )
+
+    assert result["spatial_coverage"] >= 0.90, (
+        "TEST 1 FAILED: spatial coverage too low"
+    )
+
+    print("TEST 1 PASSED - normal text")
+
+    # ========================================================
+    # TEST 2
+    # Date
+    # ========================================================
+
+    result = results[1]
+
+    assert result["matched"] is True, (
+        "TEST 2 FAILED: DOB should match"
+    )
+
+    print("TEST 2 PASSED - second line inside same Baidu block")
+
+    # ========================================================
+    # TEST 3
+    # Multiple Textract lines -> one Baidu paragraph
+    # ========================================================
+
+    result = results[2]
+
+    assert result["matched"] is True
+
+    result = results[3]
+
+    assert result["matched"] is True
+
+    result = results[4]
+
+    assert result["matched"] is True
+
+    # All three should point to the same Baidu block
+    assert (
+        results[2]["baidu_index"]
+        ==
+        results[3]["baidu_index"]
+        ==
+        results[4]["baidu_index"]
     )
 
     print(
-        "\nSaved: ocr_comparison.csv"
+        "TEST 3 PASSED - multiple Textract lines "
+        "matched to one Baidu paragraph"
+    )
+
+    # ========================================================
+    # TEST 4
+    # Table
+    # ========================================================
+
+    table_results = results[5:9]
+
+    for result in table_results:
+
+        assert result["matched"] is True, (
+            "TABLE TEST FAILED"
+        )
+
+        assert result["baidu_is_table"] is True, (
+            "TABLE TEST FAILED: table not detected"
+        )
+
+    print(
+        "TEST 4 PASSED - <table> content"
+    )
+
+    # ========================================================
+    # TEST 5
+    # Fuzzy OCR typo
+    # ========================================================
+
+    result = results[9]
+
+    assert result["matched"] is True, (
+        "TEST 5 FAILED: Healthcare/Healthcar "
+        "should fuzzy-match"
+    )
+
+    assert result["text_coverage"] >= 0.85
+
+    print(
+        "TEST 5 PASSED - fuzzy OCR matching"
+    )
+
+    # ========================================================
+    # TEST 6
+    # Missing content
+    # ========================================================
+
+    result = results[10]
+
+    assert result["matched"] is False, (
+        "TEST 6 FAILED: missing content "
+        "should not match"
+    )
+
+    print(
+        "TEST 6 PASSED - missing content detection"
+    )
+
+    # ========================================================
+    # Final summary
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print("ALL TESTS PASSED")
+    print("=" * 70)
+
+    print()
+    print("Evaluation summary:")
+    print(summary)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    # Run synthetic tests
+    run_tests()
+
+    # --------------------------------------------------------
+    # Also print the complete evaluation
+    # --------------------------------------------------------
+
+    textract, baidu = create_test_data()
+
+    summary, results = evaluate_ocr(
+        textract,
+        baidu
+    )
+
+    print_evaluation(
+        summary,
+        results
     )
