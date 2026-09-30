@@ -1,378 +1,444 @@
-import pandas as pd
-import fitz  # PyMuPDF
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from PIL import Image
-import io
+import re
+import csv
+from rapidfuzz.fuzz import ratio
 
 
-# ============================================================
-# CONFIG
-# ============================================================
+# ---------------------------------------------------------
+# 1. TEXT NORMALIZATION
+# ---------------------------------------------------------
 
-PARQUET_FILE = "parse.parquet"
-PDF_FILE = "your.pdf"
-
-ROW_INDEX = 0
-
-PAGE_COLUMN = "page"
-WORD_COORD_COLUMN = "word_coord"
-LINE_COORD_COLUMN = "line_coord"
-
-
-# ============================================================
-# PARSE COORDINATES
-# ============================================================
-
-def parse_coordinates(value):
+def normalize_text(text):
     """
-    Coordinate format:
+    Normalize OCR text so that differences in:
+    - case
+    - whitespace
+    - newlines
+    - repeated spaces
+    don't affect comparison.
+    """
+    text = str(text).lower()
 
-        x1,y1,x2,y2|x1,y1,x2,y2|...
+    # Replace newlines/tabs with spaces
+    text = re.sub(r"\s+", " ", text)
 
-    Example:
+    # Remove leading/trailing whitespace
+    text = text.strip()
 
-        0.069413,0.133669,0.112734,0.227936|
-        0.582439,0.638174,0.630340,0.698704
+    return text
+
+
+# ---------------------------------------------------------
+# 2. BBOX FUNCTIONS
+# ---------------------------------------------------------
+
+def bbox_area(box):
+    x1, y1, x2, y2 = box
+
+    width = max(0, x2 - x1)
+    height = max(0, y2 - y1)
+
+    return width * height
+
+
+def intersection(box1, box2):
+    """
+    Returns intersection rectangle.
     """
 
-    if pd.isna(value):
-        return []
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
 
-    value = str(value).strip()
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
 
-    if not value:
-        return []
+    if x2 <= x1 or y2 <= y1:
+        return None
 
-    coordinates = []
+    return [x1, y1, x2, y2]
 
-    for item in value.split("|"):
 
-        item = item.strip()
+def intersection_area(box1, box2):
 
-        if not item:
+    inter = intersection(box1, box2)
+
+    if inter is None:
+        return 0
+
+    return bbox_area(inter)
+
+
+def containment(textract_box, baidu_box):
+    """
+    Percentage of the Textract box covered by Baidu box.
+
+    This is NOT IoU.
+
+    If Textract box is completely inside Baidu box:
+        containment = 1.0
+    """
+
+    textract_area = bbox_area(textract_box)
+
+    if textract_area == 0:
+        return 0
+
+    inter_area = intersection_area(
+        textract_box,
+        baidu_box
+    )
+
+    return inter_area / textract_area
+
+
+# ---------------------------------------------------------
+# 3. TEXT MATCHING
+# ---------------------------------------------------------
+
+def text_similarity(textract_text, baidu_text):
+    """
+    Basic fuzzy similarity.
+    """
+
+    a = normalize_text(textract_text)
+    b = normalize_text(baidu_text)
+
+    if not a or not b:
+        return 0
+
+    return ratio(a, b) / 100.0
+
+
+def text_is_contained(textract_text, baidu_text):
+    """
+    Checks whether Textract's text occurs inside
+    the Baidu block.
+
+    This is particularly useful because:
+
+        Textract = individual line
+        Baidu    = complete paragraph
+    """
+
+    a = normalize_text(textract_text)
+    b = normalize_text(baidu_text)
+
+    return a in b
+
+
+# ---------------------------------------------------------
+# 4. FIND BEST BAIDU MATCH
+# ---------------------------------------------------------
+
+def find_best_match(
+    textract_item,
+    baidu_items,
+    min_spatial_coverage=0.80,
+    min_text_similarity=0.80
+):
+
+    textract_text = textract_item["text"]
+    textract_box = textract_item["bbox"]
+
+    candidates = []
+
+    for idx, baidu_item in enumerate(baidu_items):
+
+        baidu_box = baidu_item["bbox"]
+        baidu_text = baidu_item["text"]
+
+        # -----------------------------
+        # Spatial coverage
+        # -----------------------------
+
+        coverage = containment(
+            textract_box,
+            baidu_box
+        )
+
+        if coverage < min_spatial_coverage:
             continue
 
-        try:
+        # -----------------------------
+        # Text containment
+        # -----------------------------
 
-            values = [
-                float(x.strip())
-                for x in item.split(",")
-            ]
-
-            if len(values) != 4:
-                print(
-                    "Skipping invalid coordinate:",
-                    item
-                )
-                continue
-
-            x1, y1, x2, y2 = values
-
-            coordinates.append(
-                (x1, y1, x2, y2)
-            )
-
-        except ValueError:
-
-            print(
-                "Could not parse:",
-                item
-            )
-
-    return coordinates
-
-
-# ============================================================
-# DRAW BOX
-# ============================================================
-
-def draw_box(
-    ax,
-    coordinate,
-    image_width,
-    image_height,
-    edge_color,
-    linewidth,
-    label=None
-):
-    """
-    Coordinate format:
-
-        x1,y1,x2,y2
-
-    Coordinates are normalized between 0 and 1.
-    """
-
-    x1, y1, x2, y2 = coordinate
-
-    # --------------------------------------------------------
-    # Convert normalized coordinates to image coordinates
-    # --------------------------------------------------------
-
-    x1 = x1 * image_width
-    y1 = y1 * image_height
-
-    x2 = x2 * image_width
-    y2 = y2 * image_height
-
-    # --------------------------------------------------------
-    # Width and height
-    # --------------------------------------------------------
-
-    width = x2 - x1
-    height = y2 - y1
-
-    # --------------------------------------------------------
-    # Draw rectangle
-    # --------------------------------------------------------
-
-    rectangle = patches.Rectangle(
-        (x1, y1),
-        width,
-        height,
-        linewidth=linewidth,
-        edgecolor=edge_color,
-        facecolor="none"
-    )
-
-    ax.add_patch(rectangle)
-
-    # --------------------------------------------------------
-    # Label
-    # --------------------------------------------------------
-
-    if label is not None:
-
-        ax.text(
-            x1,
-            max(0, y1 - 2),
-            label,
-            fontsize=7,
-            color=edge_color,
-            backgroundcolor="white"
+        exact_contained = text_is_contained(
+            textract_text,
+            baidu_text
         )
 
+        # -----------------------------
+        # Fuzzy similarity
+        # -----------------------------
 
-# ============================================================
-# MAIN
-# ============================================================
-
-def visualize_row(
-    parquet_file,
-    pdf_file,
-    row_index=0
-):
-
-    # ========================================================
-    # 1. READ PARQUET
-    # ========================================================
-
-    df = pd.read_parquet(
-        parquet_file
-    )
-
-    print(
-        "Total parquet rows:",
-        len(df)
-    )
-
-    # Select ONE row
-    row = df.iloc[row_index]
-
-    print(
-        "\nSelected row:",
-        row_index
-    )
-
-    # ========================================================
-    # 2. GET PAGE NUMBER
-    # ========================================================
-
-    page_number = int(
-        row[PAGE_COLUMN]
-    )
-
-    print(
-        "PDF page:",
-        page_number
-    )
-
-    # ========================================================
-    # 3. GET WORD COORDINATES
-    # ========================================================
-
-    word_coordinates = parse_coordinates(
-        row[WORD_COORD_COLUMN]
-    )
-
-    # ========================================================
-    # 4. GET LINE COORDINATES
-    # ========================================================
-
-    line_coordinates = parse_coordinates(
-        row[LINE_COORD_COLUMN]
-    )
-
-    print(
-        "Word boxes:",
-        len(word_coordinates)
-    )
-
-    print(
-        "Line boxes:",
-        len(line_coordinates)
-    )
-
-    # ========================================================
-    # 5. OPEN PDF
-    # ========================================================
-
-    pdf = fitz.open(
-        pdf_file
-    )
-
-    if page_number < 1 or page_number > len(pdf):
-
-        raise ValueError(
-            f"Page {page_number} does not exist. "
-            f"PDF contains {len(pdf)} pages."
+        similarity = text_similarity(
+            textract_text,
+            baidu_text
         )
 
-    # PDF pages are zero-indexed
-    page = pdf[
-        page_number - 1
+        # If exact text occurs in the larger
+        # Baidu paragraph, give it maximum text score.
+        if exact_contained:
+            similarity = 1.0
+
+        if similarity < min_text_similarity:
+            continue
+
+        candidates.append({
+            "baidu_index": idx,
+            "spatial_coverage": coverage,
+            "text_similarity": similarity,
+            "text_contained": exact_contained
+        })
+
+    if not candidates:
+        return None
+
+    # -----------------------------------------------------
+    # Select the best candidate.
+    #
+    # Prioritize text similarity and spatial coverage.
+    # -----------------------------------------------------
+
+    candidates.sort(
+        key=lambda x: (
+            x["text_similarity"],
+            x["spatial_coverage"]
+        ),
+        reverse=True
+    )
+
+    return candidates[0]
+
+
+# ---------------------------------------------------------
+# 5. EVALUATE
+# ---------------------------------------------------------
+
+def evaluate(textract_items, baidu_items):
+
+    results = []
+
+    matched_count = 0
+
+    total_spatial_coverage = 0
+    total_text_similarity = 0
+
+    for textract_index, textract_item in enumerate(textract_items):
+
+        match = find_best_match(
+            textract_item,
+            baidu_items
+        )
+
+        if match:
+
+            matched = True
+
+            matched_count += 1
+
+            total_spatial_coverage += (
+                match["spatial_coverage"]
+            )
+
+            total_text_similarity += (
+                match["text_similarity"]
+            )
+
+            results.append({
+                "textract_index": textract_index,
+                "textract_text": textract_item["text"],
+                "textract_bbox": textract_item["bbox"],
+
+                "baidu_index": match["baidu_index"],
+
+                "spatial_coverage":
+                    match["spatial_coverage"],
+
+                "text_similarity":
+                    match["text_similarity"],
+
+                "text_contained":
+                    match["text_contained"],
+
+                "matched": True
+            })
+
+        else:
+
+            results.append({
+                "textract_index": textract_index,
+                "textract_text": textract_item["text"],
+                "textract_bbox": textract_item["bbox"],
+
+                "baidu_index": None,
+
+                "spatial_coverage": 0,
+
+                "text_similarity": 0,
+
+                "text_contained": False,
+
+                "matched": False
+            })
+
+    total = len(textract_items)
+
+    if total > 0:
+
+        coverage_percentage = (
+            matched_count / total
+        ) * 100
+
+    else:
+
+        coverage_percentage = 0
+
+    matched_items = [
+        r for r in results
+        if r["matched"]
     ]
 
-    # ========================================================
-    # 6. GET PDF PAGE SIZE
-    # ========================================================
+    if matched_items:
 
-    pdf_width = page.rect.width
-    pdf_height = page.rect.height
+        avg_spatial_coverage = (
+            sum(
+                r["spatial_coverage"]
+                for r in matched_items
+            )
+            / len(matched_items)
+        )
+
+        avg_text_similarity = (
+            sum(
+                r["text_similarity"]
+                for r in matched_items
+            )
+            / len(matched_items)
+        )
+
+    else:
+
+        avg_spatial_coverage = 0
+        avg_text_similarity = 0
+
+    summary = {
+
+        "textract_items": total,
+
+        "matched_items": matched_count,
+
+        "missing_items":
+            total - matched_count,
+
+        "coverage_percentage":
+            coverage_percentage,
+
+        "average_spatial_coverage":
+            avg_spatial_coverage * 100,
+
+        "average_text_similarity":
+            avg_text_similarity * 100
+    }
+
+    return summary, results
+
+
+# ---------------------------------------------------------
+# 6. SAVE DETAILS TO CSV
+# ---------------------------------------------------------
+
+def save_results_csv(results, filename):
+
+    fieldnames = [
+        "textract_index",
+        "textract_text",
+        "textract_bbox",
+        "baidu_index",
+        "spatial_coverage",
+        "text_similarity",
+        "text_contained",
+        "matched"
+    ]
+
+    with open(
+        filename,
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as f:
+
+        writer = csv.DictWriter(
+            f,
+            fieldnames=fieldnames
+        )
+
+        writer.writeheader()
+
+        writer.writerows(results)
+
+
+# =========================================================
+# EXAMPLE
+# =========================================================
+
+if __name__ == "__main__":
+
+    textract = [
+
+        {
+            "text": "Patient Name: John Smith",
+            "bbox": [100, 100, 400, 130]
+        },
+
+        {
+            "text": "DOB: 01/01/1985",
+            "bbox": [100, 140, 300, 170]
+        },
+
+        {
+            "text": "Address: Chennai",
+            "bbox": [100, 180, 300, 210]
+        }
+    ]
+
+    baidu = [
+
+        {
+            "text": """
+            Patient Name: John Smith
+            DOB: 01/01/1985
+            Address: Chennai
+            """,
+
+            "bbox": [90, 90, 500, 230]
+        }
+    ]
+
+    summary, results = evaluate(
+        textract,
+        baidu
+    )
+
+    print("\n========== SUMMARY ==========\n")
+
+    for key, value in summary.items():
+
+        print(
+            f"{key}: {value}"
+        )
+
+    print("\n========== DETAILS ==========\n")
+
+    for result in results:
+
+        print(result)
+
+    save_results_csv(
+        results,
+        "ocr_comparison.csv"
+    )
 
     print(
-        f"PDF page size: "
-        f"{pdf_width:.2f} x "
-        f"{pdf_height:.2f} points"
+        "\nSaved: ocr_comparison.csv"
     )
-
-    # ========================================================
-    # 7. RENDER PAGE
-    # ========================================================
-
-    zoom = 2
-
-    pixmap = page.get_pixmap(
-        matrix=fitz.Matrix(
-            zoom,
-            zoom
-        ),
-        alpha=False
-    )
-
-    image = Image.open(
-        io.BytesIO(
-            pixmap.tobytes("png")
-        )
-    )
-
-    image_width, image_height = image.size
-
-    print(
-        f"Rendered image size: "
-        f"{image_width} x "
-        f"{image_height}"
-    )
-
-    # ========================================================
-    # 8. CREATE FIGURE
-    # ========================================================
-
-    fig, ax = plt.subplots(
-        figsize=(14, 18)
-    )
-
-    ax.imshow(image)
-
-    # ========================================================
-    # 9. DRAW LINE BOXES
-    # ========================================================
-
-    for index, coordinate in enumerate(
-        line_coordinates,
-        start=1
-    ):
-
-        draw_box(
-            ax=ax,
-            coordinate=coordinate,
-            image_width=image_width,
-            image_height=image_height,
-            edge_color="blue",
-            linewidth=2,
-            label=f"L{index}"
-        )
-
-    # ========================================================
-    # 10. DRAW WORD BOXES
-    # ========================================================
-
-    for index, coordinate in enumerate(
-        word_coordinates,
-        start=1
-    ):
-
-        draw_box(
-            ax=ax,
-            coordinate=coordinate,
-            image_width=image_width,
-            image_height=image_height,
-            edge_color="red",
-            linewidth=1,
-            label=f"W{index}"
-        )
-
-    # ========================================================
-    # 11. DISPLAY
-    # ========================================================
-
-    ax.set_xlim(
-        0,
-        image_width
-    )
-
-    ax.set_ylim(
-        image_height,
-        0
-    )
-
-    ax.axis("off")
-
-    ax.set_title(
-        f"PDF Page {page_number} | "
-        f"Parquet Row {row_index}\n"
-        f"Words: {len(word_coordinates)} | "
-        f"Lines: {len(line_coordinates)}"
-    )
-
-    plt.tight_layout()
-
-    plt.show()
-
-    # ========================================================
-    # 12. CLOSE PDF
-    # ========================================================
-
-    pdf.close()
-
-
-# ============================================================
-# RUN
-# ============================================================
-
-visualize_row(
-    parquet_file=PARQUET_FILE,
-    pdf_file=PDF_FILE,
-    row_index=ROW_INDEX
-)
