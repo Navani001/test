@@ -1,116 +1,49 @@
-def bbox_area(box):
-    x1, y1, x2, y2 = box
-    return max(0, x2 - x1) * max(0, y2 - y1)
-
-
-def expand_box(box, buffer=5):
-    """
-    Add a pixel buffer around the box.
-    """
-    x1, y1, x2, y2 = box
-
-    return [
-        x1 - buffer,
-        y1 - buffer,
-        x2 + buffer,
-        y2 + buffer
-    ]
-
-
-def overlap_metrics(textract_box, baidu_box, buffer=5):
-    """
-    Compare two OCR bounding boxes.
-
-    textract_box: [x1, y1, x2, y2]
-    baidu_box:    [x1, y1, x2, y2]
-
-    Returns:
-        intersection_area
-        IoU
-        textract_coverage
-        baidu_coverage
-        overlap
-    """
-
-    # Add buffer to Baidu box
-    baidu_box = expand_box(
-        baidu_box,
-        buffer
-    )
-
+def box_match_probability(textract_box, baidu_box, buffer=10):
     tx1, ty1, tx2, ty2 = textract_box
     bx1, by1, bx2, by2 = baidu_box
 
+    tw = max(0, tx2 - tx1)
+    th = max(0, ty2 - ty1)
+
+    bw = max(0, bx2 - bx1)
+    bh = max(0, by2 - by1)
+
+    if min(tw, th, bw, bh) <= 0:
+        return 0.0
+
     # Intersection
-    ix1 = max(tx1, bx1)
-    iy1 = max(ty1, by1)
+    iw = max(0, min(tx2, bx2) - max(tx1, bx1))
+    ih = max(0, min(ty2, by2) - max(ty1, by1))
 
-    ix2 = min(tx2, bx2)
-    iy2 = min(ty2, by2)
+    # Coverage of Textract box
+    coverage = (iw * ih) / (tw * th)
 
-    # No overlap
-    if ix2 <= ix1 or iy2 <= iy1:
-        return {
-            "overlap": False,
-            "intersection_area": 0,
-            "iou": 0.0,
-            "textract_coverage": 0.0,
-            "baidu_coverage": 0.0
-        }
+    # Axis overlap
+    x_overlap = iw / min(tw, bw)
+    y_overlap = ih / min(th, bh)
 
-    intersection_area = (
-        (ix2 - ix1) *
-        (iy2 - iy1)
+    # Distance between boxes
+    gap_x = max(bx1 - tx2, tx1 - bx2, 0)
+    gap_y = max(by1 - ty2, ty1 - by2, 0)
+
+    distance = math.sqrt(gap_x ** 2 + gap_y ** 2)
+
+    # Distance relative to Textract box size
+    reference = math.sqrt(tw ** 2 + th ** 2)
+
+    normalized_distance = distance / max(reference, 1)
+
+    distance_score = math.exp(-3 * normalized_distance)
+
+    # --------------------------------------------------
+    # Final probability
+    # --------------------------------------------------
+
+    probability = (
+        0.45 * coverage +
+        0.20 * x_overlap +
+        0.20 * y_overlap +
+        0.15 * distance_score
     )
 
-    textract_area = bbox_area(
-        textract_box
-    )
-
-    baidu_area = bbox_area(
-        baidu_box
-    )
-
-    # --------------------------------------------------------
-    # IoU
-    # --------------------------------------------------------
-
-    union_area = (
-        textract_area
-        + baidu_area
-        - intersection_area
-    )
-
-    iou = (
-        intersection_area / union_area
-        if union_area > 0
-        else 0
-    )
-
-    # --------------------------------------------------------
-    # How much of Textract is covered by Baidu
-    # --------------------------------------------------------
-
-    textract_coverage = (
-        intersection_area / textract_area
-        if textract_area > 0
-        else 0
-    )
-
-    # --------------------------------------------------------
-    # How much of Baidu is covered by Textract
-    # --------------------------------------------------------
-
-    baidu_coverage = (
-        intersection_area / baidu_area
-        if baidu_area > 0
-        else 0
-    )
-
-    return {
-        "overlap": True,
-        "intersection_area": intersection_area,
-        "iou": iou,
-        "textract_coverage": textract_coverage,
-        "baidu_coverage": baidu_coverage
-    }
+    return round(min(max(probability, 0), 1), 4)
