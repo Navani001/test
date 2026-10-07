@@ -1,49 +1,80 @@
-def box_match_probability(textract_box, baidu_box, buffer=10):
-    tx1, ty1, tx2, ty2 = textract_box
-    bx1, by1, bx2, by2 = baidu_box
+def build_content(prompt, image_paths):
+    content = [
+        {
+            "type": "text",
+            "text": prompt
+        }
+    ]
 
-    tw = max(0, tx2 - tx1)
-    th = max(0, ty2 - ty1)
+    for image_path in image_paths:
+        content.append(
+            encode_image(image_path)
+        )
 
-    bw = max(0, bx2 - bx1)
-    bh = max(0, by2 - by1)
+    return content
 
-    if min(tw, th, bw, bh) <= 0:
-        return 0.0
 
-    # Intersection
-    iw = max(0, min(tx2, bx2) - max(tx1, bx1))
-    ih = max(0, min(ty2, by2) - max(ty1, by1))
+def generate(image_paths):
+    start = time.time()
 
-    # Coverage of Textract box
-    coverage = (iw * ih) / (tw * th)
+    for i in range(0, len(image_paths), 2):
 
-    # Axis overlap
-    x_overlap = iw / min(tw, bw)
-    y_overlap = ih / min(th, bh)
+        batch = image_paths[i:i + 2]
 
-    # Distance between boxes
-    gap_x = max(bx1 - tx2, tx1 - bx2, 0)
-    gap_y = max(by1 - ty2, ty1 - by2, 0)
+        messages = [
+            {
+                "role": "user",
+                "content": build_content(
+                    "Multi page parsing. "
+                    "Keep each page's response separate. "
+                    "For each page use the format "
+                    "<<<PAGE_START>>> and <<<PAGE_END>>>.",
+                    batch
+                )
+            }
+        ]
 
-    distance = math.sqrt(gap_x ** 2 + gap_y ** 2)
+        response = client.chat.completions.create(
+            model="baidu/Unlimited-OCR",
+            messages=messages,
+            max_tokens=8192,
+            temperature=0.0,
+            extra_body={
+                "skip_special_tokens": False,
+                "vllm_xargs": {
+                    "ngram_size": 35,
+                    "window_size": 1024
+                }
+            }
+        )
 
-    # Distance relative to Textract box size
-    reference = math.sqrt(tw ** 2 + th ** 2)
+        result = response.choices[0].message.content
 
-    normalized_distance = distance / max(reference, 1)
+        pages = result.split(
+            "<<<PAGE_START>>>"
+        )
 
-    distance_score = math.exp(-3 * normalized_distance)
+        for j, page_result in enumerate(pages[1:]):
 
-    # --------------------------------------------------
-    # Final probability
-    # --------------------------------------------------
+            page_result = page_result.split(
+                "<<<PAGE_END>>>",
+                1
+            )[0].strip()
 
-    probability = (
-        0.45 * coverage +
-        0.20 * x_overlap +
-        0.20 * y_overlap +
-        0.15 * distance_score
+            page_number = i + j + 1
+
+            with open(
+                f"page_{page_number:04d}.txt",
+                "w",
+                encoding="utf-8"
+            ) as f:
+                f.write(page_result)
+
+            print(
+                f"Page {page_number} saved"
+            )
+
+    print(
+        f"Response costs: "
+        f"{time.time() - start:.2f}s"
     )
-
-    return round(min(max(probability, 0), 1), 4)
