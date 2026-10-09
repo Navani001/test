@@ -1,203 +1,183 @@
-
-import os
-import re
-import shutil
-import pandas as pd
+import csv
+import random
+from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
-# Configuration
-CSV_PATH = "input.csv"
-OUTPUT_DIR = "test_dataset"
-PDF_DIR = os.path.join(OUTPUT_DIR, "pdfs")
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "test_dataset.csv")
+# ---------------- CONFIGURATION ----------------
 
-MAX_PAGES = 100
-TARGET_PER_TYPE = 50
+INPUT_FOLDER = Path("/path/to/pdf_folder")
+OUTPUT_FOLDER = Path("/path/to/output_folder")
 
+TOTAL_PAGES = 100  # Set to 200 if needed
+MIN_PDFS = 5       # Minimum number of source PDFs
+RANDOM_SEED = None # Set to an integer for repeatable results
 
-def safe_folder_name(name):
-    return re.sub(r'[<>:"/\\|?*]', "_", str(name)).strip(". ") or "unknown"
+# ------------------------------------------------
 
 
-def unique_path(directory, filename):
-    path = os.path.join(directory, filename)
+def extract_random_pages():
+    if TOTAL_PAGES not in (100, 200):
+        raise ValueError("TOTAL_PAGES must be 100 or 200.")
 
-    if not os.path.exists(path):
-        return path
+    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(RANDOM_SEED)
 
-    base, ext = os.path.splitext(filename)
-    part = 1
+    pdf_files = [
+        p for p in INPUT_FOLDER.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".pdf"
+        and p.parent.resolve() != OUTPUT_FOLDER.resolve()
+    ]
 
-    while True:
-        path = os.path.join(directory, f"{base}_part{part}{ext}")
-        if not os.path.exists(path):
-            return path
-        part += 1
+    if not pdf_files:
+        raise ValueError("No PDFs found in the input folder.")
 
+    # Read page counts.
+    pdf_info = []
 
-def write_pages(reader, output_path, start_page, page_count):
-    writer = PdfWriter()
-
-    for page_index in range(start_page, start_page + page_count):
-        writer.add_page(reader.pages[page_index])
-
-    with open(output_path, "wb") as output_file:
-        writer.write(output_file)
-
-
-def create_test_dataset():
-    df = pd.read_csv(CSV_PATH)
-
-    required = {"pdf_path", "template", "difficulty"}
-    missing = required - set(df.columns)
-
-    if missing:
-        raise ValueError(f"Missing CSV columns: {missing}")
-
-    os.makedirs(PDF_DIR, exist_ok=True)
-
-    templates = {}
-    selected_source_rows = set()
-
-    for row_index, row in df.iterrows():
-        pdf_path = str(row["pdf_path"]).strip()
-        template = str(row["template"]).strip()
-        difficulty = str(row["difficulty"]).strip().lower()
-
-        if not pdf_path or pdf_path.lower() == "nan":
-            continue
-        if not template or template.lower() == "nan":
-            continue
-        if difficulty not in ("easy", "hard"):
-            print(f"Skipping unknown difficulty: {pdf_path}")
-            continue
-        if not os.path.isfile(pdf_path):
-            print(f"PDF not found: {pdf_path}")
-            continue
-
+    for path in pdf_files:
         try:
-            reader = PdfReader(pdf_path)
-            page_count = len(reader.pages)
-        except Exception as error:
-            print(f"Cannot read PDF {pdf_path}: {error}")
-            continue
+            reader = PdfReader(str(path), strict=False)
 
-        if page_count == 0:
-            continue
+            if reader.is_encrypted:
+                if not reader.decrypt(""):
+                    continue
 
-        templates.setdefault(template, {"easy": [], "hard": []})
-        templates[template][difficulty].append({
-            "path": pdf_path,
-            "pages": page_count,
-            "row_index": row_index,
-        })
+            count = len(reader.pages)
 
-    output_rows = []
-    summary = []
-
-    for template, categories in templates.items():
-        easy_total = sum(x["pages"] for x in categories["easy"])
-        hard_total = sum(x["pages"] for x in categories["hard"])
-
-        easy_target = min(TARGET_PER_TYPE, easy_total)
-        hard_target = min(TARGET_PER_TYPE, hard_total)
-
-        # Fill shortages using the other difficulty.
-        if easy_target < TARGET_PER_TYPE:
-            hard_target += min(
-                TARGET_PER_TYPE - easy_target,
-                hard_total - hard_target,
-            )
-
-        if hard_target < TARGET_PER_TYPE:
-            easy_target += min(
-                TARGET_PER_TYPE - hard_target,
-                easy_total - easy_target,
-            )
-
-        targets = {
-            "easy": easy_target,
-            "hard": hard_target,
-        }
-
-        template_dir = os.path.join(PDF_DIR, safe_folder_name(template))
-        os.makedirs(template_dir, exist_ok=True)
-
-        selected_counts = {"easy": 0, "hard": 0}
-
-        for difficulty in ("easy", "hard"):
-            remaining = targets[difficulty]
-
-            for index, source in enumerate(categories[difficulty]):
-                if remaining <= 0:
-                    break
-
-                take = min(source["pages"], remaining)
-                source_path = source["path"]
-                original_name = os.path.basename(source_path)
-
-                if take == source["pages"]:
-                    # Copy the full PDF with its original filename.
-                    destination = unique_path(template_dir, original_name)
-                    shutil.copy2(source_path, destination)
-                    operation = "copied"
-                else:
-                    # Create a split PDF; original file remains untouched.
-                    base, ext = os.path.splitext(original_name)
-                    split_name = f"{base}_part{index + 1}{ext}"
-                    destination = unique_path(template_dir, split_name)
-
-                    reader = PdfReader(source_path)
-                    write_pages(reader, destination, 0, take)
-                    operation = "split"
-
-                selected_source_rows.add(source["row_index"])
-
-                output_rows.append({
-                    "template": template,
-                    "pdf_path": os.path.abspath(destination),
-                    "difficulty": difficulty,
-                    "selected": True,
-                    "operation": operation,
-                    "pages_selected": take,
+            if count > 0:
+                pdf_info.append({
+                    "path": path,
+                    "pages": count
                 })
 
-                selected_counts[difficulty] += take
-                remaining -= take
+        except Exception as exc:
+            print(f"Skipping {path.name}: {exc}")
 
-        summary.append({
-            "template": template,
-            "easy_pages": selected_counts["easy"],
-            "hard_pages": selected_counts["hard"],
-            "total_pages": sum(selected_counts.values()),
-        })
+    # Only PDFs that can contribute at least one page.
+    if len(pdf_info) < MIN_PDFS:
+        raise ValueError(
+            f"At least {MIN_PDFS} readable PDFs are required."
+        )
 
-    result_df = pd.DataFrame(
-        output_rows,
-        columns=[
-            "template",
-            "pdf_path",
-            "difficulty",
-            "selected",
-            "operation",
-            "pages_selected",
-        ],
+    # Randomize source order.
+    rng.shuffle(pdf_info)
+
+    # Prefer using many PDFs, while allowing unequal page counts.
+    max_sources = min(len(pdf_info), TOTAL_PAGES)
+    source_count = rng.randint(
+        min(MIN_PDFS, max_sources),
+        max_sources
     )
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    result_df.to_csv(OUTPUT_CSV, index=False)
+    selected_sources = pdf_info[:source_count]
 
-    print("\nSelection summary:")
-    if summary:
-        print(pd.DataFrame(summary).to_string(index=False))
+    # Give each selected PDF at least one page.
+    allocations = [1] * source_count
+    remaining = TOTAL_PAGES - source_count
 
-    print(f"\nOutput CSV: {OUTPUT_CSV}")
-    print(f"Selected PDFs folder: {PDF_DIR}")
+    # Distribute remaining pages randomly, respecting PDF sizes.
+    capacities = [
+        info["pages"] - 1 for info in selected_sources
+    ]
 
-    return result_df
+    while remaining > 0:
+        eligible = [
+            i for i, capacity in enumerate(capacities)
+            if capacity > 0
+        ]
+
+        if not eligible:
+            # Add more source PDFs if current ones lack enough pages.
+            remaining_sources = [
+                info for info in pdf_info
+                if info not in selected_sources
+            ]
+
+            if not remaining_sources:
+                raise ValueError(
+                    "Not enough available pages for this selection."
+                )
+
+            new_source = remaining_sources[0]
+            selected_sources.append(new_source)
+            allocations.append(0)
+            capacities.append(new_source["pages"])
+            source_count += 1
+            eligible = [len(capacities) - 1]
+
+        # Randomly choose a PDF and allocate a small consecutive block.
+        index = rng.choice(eligible)
+        block_size = rng.randint(
+            1, min(remaining, capacities[index], 20)
+        )
+
+        allocations[index] += block_size
+        capacities[index] -= block_size
+        remaining -= block_size
+
+    # Extract randomly positioned continuous sections.
+    writer = PdfWriter()
+    manifest = []
+    output_page = 1
+
+    for info, count in zip(selected_sources, allocations):
+        if count == 0:
+            continue
+
+        reader = PdfReader(str(info["path"]), strict=False)
+        start = rng.randint(0, len(reader.pages) - count)
+
+        for page_index in range(start, start + count):
+            writer.add_page(reader.pages[page_index])
+
+            manifest.append({
+                "source_pdf": info["path"].name,
+                "source_page": page_index + 1,
+                "output_page": output_page
+            })
+
+            output_page += 1
+
+    output_pdf = OUTPUT_FOLDER / f"random_{TOTAL_PAGES}_pages.pdf"
+    manifest_csv = OUTPUT_FOLDER / "selection_manifest.csv"
+
+    with output_pdf.open("wb") as f:
+        writer.write(f)
+
+    with manifest_csv.open(
+        "w", newline="", encoding="utf-8"
+    ) as f:
+        csv_writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "source_pdf",
+                "source_page",
+                "output_page"
+            ]
+        )
+        csv_writer.writeheader()
+        csv_writer.writerows(manifest)
+
+    print(f"Total pages extracted: {len(manifest)}")
+    print(f"Unique source PDFs: {len(set(x['source_pdf'] for x in manifest))}")
+    print(f"Output PDF: {output_pdf}")
+    print(f"Manifest: {manifest_csv}")
+
+    print("\nPages selected per PDF:")
+    for info in selected_sources:
+        rows = [
+            x for x in manifest
+            if x["source_pdf"] == info["path"].name
+        ]
+        if rows:
+            print(
+                f"{info['path'].name}: "
+                f"pages {rows[0]['source_page']}-"
+                f"{rows[-1]['source_page']} "
+                f"({len(rows)} pages)"
+            )
 
 
 if __name__ == "__main__":
-    result_df = create_test_dataset()
-    print("\nResult DataFrame:")
-    print(result_df)
+    extract_random_pages()
