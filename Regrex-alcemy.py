@@ -2,6 +2,16 @@ from collections import Counter
 import re
 
 
+OCR_PROMPT = """
+<image>
+Extract all pages in their original order.
+Separate consecutive pages using exactly one <PAGE> tag.
+Do not omit or repeat <PAGE> tags, pages, or content.
+Extract each page exactly once, preserving its text and layout.
+Do not skip, reorder, or merge pages. Extract only visible content.
+"""
+
+
 def extract_number(text):
     pattern = r"\b\d+(?:[.,]\d+)*%?\b"
     return re.findall(pattern, text)
