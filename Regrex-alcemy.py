@@ -1,73 +1,91 @@
-import time
-import threading
-import psutil
-import subprocess
+import os
+import json
+import glob
 
+report_folder = (
+    "/home/nlpdevintern1/ocrResearch/baidu/"
+    "batch-inference/report"
+)
 
-def measure_peak_memory(inference_fn, server_pid, interval=0.1):
-    server = psutil.Process(server_pid)
+output_folder = (
+    "/home/nlpdevintern1/ocrResearch/baidu/"
+    "evaluation/Formated-inference"
+)
 
-    peak_ram = 0
-    peak_vram = 0
-    running = True
+os.makedirs(output_folder, exist_ok=True)
 
-    def monitor():
-        nonlocal peak_ram, peak_vram
+result = []
 
-        while running:
-            try:
-                processes = [server] + server.children(recursive=True)
+# Find all JSON files in the report folder
+json_files = glob.glob(os.path.join(report_folder, "*.json"))
 
-                total_ram = sum(
-                    p.memory_info().rss
-                    for p in processes
-                    if p.is_running()
-                )
-                peak_ram = max(peak_ram, total_ram)
+for file_path in json_files:
+    file_name = os.path.basename(file_path)
 
-                output = subprocess.check_output(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=memory.used",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    text=True,
-                    timeout=2,
-                )
+    print(f"Processing: {file_name}")
 
-                gpu_memory = [
-                    int(value.strip())
-                    for value in output.splitlines()
-                    if value.strip()
-                ]
+    with open(file_path, "r", encoding="utf-8") as f:
+        datas = json.load(f)
 
-                if gpu_memory:
-                    peak_vram = max(peak_vram, max(gpu_memory))
+    for data in datas:
+        pages_list = data["pages"]
+        content_list = data["content"].split("<PAGE>")
 
-            except (
-                psutil.Error,
-                subprocess.SubprocessError,
-                ValueError,
-            ):
-                pass
+        # Remove an empty first element caused by a leading <PAGE>
+        if content_list and not content_list[0].strip():
+            content_list = content_list[1:]
 
-            time.sleep(interval)
+        # Check whether page count matches content sections
+        if len(content_list) != len(pages_list):
+            print(
+                f"Page mismatch in {file_name}: "
+                f"{len(pages_list)} pages, "
+                f"{len(content_list)} content sections"
+            )
 
-    thread = threading.Thread(target=monitor, daemon=True)
-    thread.start()
+            for page in pages_list:
+                result.append({
+                    "filename": data["filename"],
+                    "time_seconds": (
+                        data["time_seconds"] / len(pages_list)
+                        if pages_list else 0
+                    ),
+                    "token_usage": data.get("token_usage"),
+                    "content": "failed",
+                    "page": page,
+                    "failed": True,
+                    "source_file": file_name,
+                })
 
-    start = time.perf_counter()
+            continue
 
-    try:
-        result = inference_fn()
-    finally:
-        elapsed = time.perf_counter() - start
-        running = False
-        thread.join()
+        for idx, page in enumerate(pages_list):
+            result.append({
+                "filename": data["filename"],
+                "time_seconds": (
+                    data["time_seconds"] / len(pages_list)
+                    if pages_list else 0
+                ),
+                "token_usage": data.get("token_usage"),
+                "content": content_list[idx],
+                "page": page,
+                "failed": False,
+                "source_file": file_name,
+            })
 
-    memory_usage = {
-        "peak_ram_gb": round(peak_ram / (1024 ** 3), 3),
-        "peak_vram_gb": round(peak_vram / 1024, 3),
-    }
+    # Save a separate formatted JSON file for each input file
+    output_name = os.path.splitext(file_name)[0] + "-formatted.json"
+    output_path = os.path.join(output_folder, output_name)
 
-    return result, memory_usage, round(elapsed, 3)
+    # Save only the records generated from this input file
+    file_results = [
+        item for item in result
+        if item["source_file"] == file_name
+    ]
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(file_results, f, indent=4, ensure_ascii=False)
+
+    print(f"Saved: {output_path}")
+
+print(f"Processed {len(json_files)} JSON files.")
