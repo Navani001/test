@@ -1,91 +1,82 @@
 import os
 import json
 import glob
+from pathlib import Path
 
-report_folder = (
-    "/home/nlpdevintern1/ocrResearch/baidu/"
-    "batch-inference/report"
-)
-
-output_folder = (
+input_dir = (
     "/home/nlpdevintern1/ocrResearch/baidu/"
     "evaluation/Formated-inference"
 )
 
-os.makedirs(output_folder, exist_ok=True)
+output_dir = (
+    "/home/nlpdevintern1/ocrResearch/baidu/"
+    "evaluation/page-wise-analysis"
+)
 
-result = []
+os.makedirs(output_dir, exist_ok=True)
 
-# Find all JSON files in the report folder
-json_files = glob.glob(os.path.join(report_folder, "*.json"))
+json_files = glob.glob(os.path.join(input_dir, "*.json"))
 
 for file_path in json_files:
     file_name = os.path.basename(file_path)
+    output_file_name = Path(file_name).stem
 
-    print(f"Processing: {file_name}")
+    print(f"\nProcessing: {file_name}")
 
     with open(file_path, "r", encoding="utf-8") as f:
         datas = json.load(f)
 
+    output_path = os.path.join(
+        output_dir,
+        f"{output_file_name}.json",
+    )
+
     for data in datas:
-        pages_list = data["pages"]
-        content_list = data["content"].split("<PAGE>")
+        total = 0
+        failures = 0
 
-        # Remove an empty first element caused by a leading <PAGE>
-        if content_list and not content_list[0].strip():
-            content_list = content_list[1:]
+        total += 1
 
-        # Check whether page count matches content sections
-        if len(content_list) != len(pages_list):
-            print(
-                f"Page mismatch in {file_name}: "
-                f"{len(pages_list)} pages, "
-                f"{len(content_list)} content sections"
-            )
+        print("Page:", data["page"])
 
-            for page in pages_list:
-                result.append({
-                    "filename": data["filename"],
-                    "time_seconds": (
-                        data["time_seconds"] / len(pages_list)
-                        if pages_list else 0
-                    ),
-                    "token_usage": data.get("token_usage"),
-                    "content": "failed",
-                    "page": page,
-                    "failed": True,
-                    "source_file": file_name,
-                })
+        if data.get("failed") is True:
+            failures += 1
 
+            result = {
+                "filename": data["filename"],
+                "page": data["page"],
+                "time_seconds": data["time_seconds"],
+                "status": "failed",
+            }
+
+            append_json_object(output_path, result)
             continue
 
-        for idx, page in enumerate(pages_list):
-            result.append({
-                "filename": data["filename"],
-                "time_seconds": (
-                    data["time_seconds"] / len(pages_list)
-                    if pages_list else 0
-                ),
-                "token_usage": data.get("token_usage"),
-                "content": content_list[idx],
-                "page": page,
-                "failed": False,
-                "source_file": file_name,
-            })
+        page_number = data["page"] + 1
 
-    # Save a separate formatted JSON file for each input file
-    output_name = os.path.splitext(file_name)[0] + "-formatted.json"
-    output_path = os.path.join(output_folder, output_name)
+        result = evaluate_page(
+            format_textract(
+                extract_textract_data_df(page_number)
+            ),
+            baidu_formator(data),
+            generate_textrack_text(
+                format_textract(
+                    extract_textract_data_df(page_number)
+                )
+            ),
+            generate_ocr_text(
+                baidu_formator(data)
+            ),
+        )
 
-    # Save only the records generated from this input file
-    file_results = [
-        item for item in result
-        if item["source_file"] == file_name
-    ]
+        result["filename"] = data["filename"]
+        result["page"] = data["page"]
+        result["time_seconds"] = data["time_seconds"]
+        result["token_usage"] = data.get("token_usage")
+        result["status"] = "success"
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(file_results, f, indent=4, ensure_ascii=False)
+        append_json_object(output_path, result)
 
-    print(f"Saved: {output_path}")
+    print(f"Saved results to: {output_path}")
 
-print(f"Processed {len(json_files)} JSON files.")
+print(f"\nProcessed {len(json_files)} JSON files.")
