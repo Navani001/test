@@ -1,3 +1,4 @@
+We can split the work into 3 main tasks, each with a clear overview and smaller work items.
 Task 1: Structural Evaluation Research
 Overview: Research existing frameworks to identify suitable metrics for evaluating the structural quality of Baidu Unlimited-OCR output.
 Work items:
