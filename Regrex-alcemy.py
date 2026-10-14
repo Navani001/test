@@ -1,1 +1,23 @@
-The main objective of Baidu Unlimited-OCR is to improve the efficiency of long-document OCR. It uses the DeepSeek-OCR-based encoder as it provides a high compression rate for document images and replaces the decoder's standard attention layers with Reference Sliding Window Attention (R-SWA) for more efficient decoding. R-SWA allows each generated token to attend to all reference tokens and only the previous 128 output tokens by default, keeping the KV cache for generated tokens constant instead of growing with the output length. Unlike conventional sliding-window attention, it preserves access to the original document information throughout decoding. This helps the model extract text from multiple pages in a single inference pass while reducing memory usage and attention computation, within the 32K-token generation limit.
+Task 1: Structural Evaluation Research
+
+Overview: Research existing OCR evaluation frameworks to understand structural evaluation metrics and identify suitable approaches for Baidu Unlimited-OCR.
+
+Work Items:
+
+1. Study OmniDocBench metrics and run its evaluation code on sample data.
+2. Explore other frameworks such as OCR-D, DocLayNet, and table evaluation benchmarks.
+3. Compare metrics for page structure, reading order, repetition, layout, and tables.
+4. Analyze ground-truth requirements and the limitations of AWS Textract.
+5. Recommend suitable structural evaluation metrics and ground-truth approaches.
+
+Task 2: Baidu Unlimited-OCR Parameter Evaluation
+
+Overview: Evaluate additional inference parameters and prompt templates to improve OCR extraction quality and reduce output errors.
+
+Work Items:
+
+1. Test batch sizes from 1 to 5 and compare performance.
+2. Experiment with prompt templates to reduce repetition, looping, and page-order errors.
+3. Test additional supported inference parameters.
+4. Analyze results using existing CER, WER, and bounding-box metrics.
+5. Compare results and recommend the best-performing configurations.
