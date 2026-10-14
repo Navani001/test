@@ -1,10 +1,11 @@
+import os
 import time
 import threading
 import psutil
 
 
-def measure_peak_memory(server_pid, inference_fn, interval=0.1):
-    server = psutil.Process(server_pid)
+def measure_peak_ram(inference_fn, interval=0.05):
+    process = psutil.Process(os.getpid())
     peak_ram = 0
     running = True
 
@@ -13,14 +14,9 @@ def measure_peak_memory(server_pid, inference_fn, interval=0.1):
 
         while running:
             try:
-                processes = [server] + server.children(recursive=True)
-                ram = sum(
-                    p.memory_info().rss
-                    for p in processes
-                    if p.is_running()
-                )
+                ram = process.memory_info().rss
                 peak_ram = max(peak_ram, ram)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except psutil.Error:
                 pass
 
             time.sleep(interval)
@@ -32,13 +28,8 @@ def measure_peak_memory(server_pid, inference_fn, interval=0.1):
     try:
         result = inference_fn()
     finally:
+        elapsed = time.perf_counter() - start
         running = False
         thread.join()
 
-    elapsed = time.perf_counter() - start
-
-    return {
-        "result": result,
-        "peak_ram_gb": round(peak_ram / (1024**3), 3),
-        "latency_seconds": round(elapsed, 3),
-    }
+    return result, peak_ram / (1024 ** 3), elapsed
