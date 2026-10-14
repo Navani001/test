@@ -1,57 +1,44 @@
-from collections import Counter
-import re
+import time
+import threading
+import psutil
 
 
-OCR_PROMPT = """
-<image>
-Extract all pages in their original order.
-Separate consecutive pages using exactly one <PAGE> tag.
-Do not omit or repeat <PAGE> tags, pages, or content.
-Extract each page exactly once, preserving its text and layout.
-Do not skip, reorder, or merge pages. Extract only visible content.
-"""
+def measure_peak_memory(server_pid, inference_fn, interval=0.1):
+    server = psutil.Process(server_pid)
+    peak_ram = 0
+    running = True
 
+    def monitor():
+        nonlocal peak_ram
 
-def extract_number(text):
-    pattern = r"\b\d+(?:[.,]\d+)*%?\b"
-    return re.findall(pattern, text)
+        while running:
+            try:
+                processes = [server] + server.children(recursive=True)
+                ram = sum(
+                    p.memory_info().rss
+                    for p in processes
+                    if p.is_running()
+                )
+                peak_ram = max(peak_ram, ram)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
 
+            time.sleep(interval)
 
-def number_accuracy(ground_truth, ocr_output):
-    gt_numbers = extract_number(ground_truth)
-    ocr_numbers = extract_number(ocr_output)
+    thread = threading.Thread(target=monitor, daemon=True)
+    thread.start()
 
-    gt_counts = Counter(gt_numbers)
-    ocr_counts = Counter(ocr_numbers)
+    start = time.perf_counter()
+    try:
+        result = inference_fn()
+    finally:
+        running = False
+        thread.join()
 
-    # Match each occurrence at most once
-    correct = sum(
-        (gt_counts & ocr_counts).values()
-    )
-
-    tp = correct
-    fp = sum(ocr_counts.values()) - tp
-    fn = sum(gt_counts.values()) - tp
-
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-
-    # For extraction, report reference-number coverage as accuracy.
-    accuracy = recall
-
-    f1 = (
-        2 * precision * recall / (precision + recall)
-        if precision + recall else 0.0
-    )
+    elapsed = time.perf_counter() - start
 
     return {
-        "ground_truth_numbers": gt_numbers,
-        "ocr_numbers": ocr_numbers,
-        "correct": tp,
-        "false_positives": fp,
-        "false_negatives": fn,
-        "precision": precision,
-        "recall": recall,
-        "accuracy": accuracy,
-        "f1": f1,
+        "result": result,
+        "peak_ram_gb": round(peak_ram / (1024**3), 3),
+        "latency_seconds": round(elapsed, 3),
     }
