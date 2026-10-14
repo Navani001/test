@@ -16,8 +16,9 @@ Overview: Evaluate additional inference parameters and prompt templates to impro
 
 Work Items:
 
-1. Test batch sizes from 1 to 5 and compare performance.
-2. Experiment with prompt templates to reduce repetition, looping, and page-order errors.
+1. Test batch sizes from 1 to 5.
+2. Experiment with different prompt templates.
 3. Test additional supported inference parameters.
-4. Analyze results using existing CER, WER, and bounding-box metrics.
-5. Compare results and recommend the best-performing configurations.
+4. Evaluate outputs using existing CER, WER, and bounding-box metrics.
+5. Analyze repetition, looping, and page-order errors.
+6. Recommend the best-performing configuration.
