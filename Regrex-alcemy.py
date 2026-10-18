@@ -1,45 +1,69 @@
 import re
-from collections import Counter
 
 
-def evaluate_number_accuracy(ground_truth: str, prediction: str) -> dict:
-    pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
+def evaluate_looping(text: str, min_ngram: int = 5) -> dict:
+    words = re.findall(r"\b[\w'-]+\b", text.casefold())
+    n = len(words)
 
-    def extract_numbers(text):
-        return [
-            number.replace(",", "")
-            for number in re.findall(pattern, text)
-        ]
+    repeated_sequences = []
+    total_excess_words = 0
 
-    gt_numbers = Counter(extract_numbers(ground_truth))
-    pred_numbers = Counter(extract_numbers(prediction))
+    for size in range(min_ngram, n // 2 + 1):
+        i = 0
 
-    matched = sum((gt_numbers & pred_numbers).values())
-    gt_total = sum(gt_numbers.values())
-    pred_total = sum(pred_numbers.values())
+        while i + 2 * size <= n:
+            sequence = words[i:i + size]
+            repetitions = 1
 
-    precision = matched / pred_total if pred_total else 0.0
-    recall = matched / gt_total if gt_total else 0.0
+            while (
+                i + (repetitions + 1) * size <= n
+                and words[
+                    i + repetitions * size:
+                    i + (repetitions + 1) * size
+                ] == sequence
+            ):
+                repetitions += 1
 
-    f1 = (
-        2 * precision * recall / (precision + recall)
-        if precision + recall else 0.0
-    )
+            if repetitions >= 2:
+                excess = (repetitions - 1) * size
+
+                repeated_sequences.append({
+                    "text": " ".join(sequence),
+                    "repetitions": repetitions,
+                    "excess_words": excess,
+                    "start_word_index": i,
+                })
+
+                total_excess_words += excess
+                i += repetitions * size
+            else:
+                i += 1
+
+    unique = {}
+    for item in repeated_sequences:
+        key = (item["start_word_index"], item["text"])
+        unique[key] = item
+
+    repeated_sequences = list(unique.values())
 
     return {
-        "ground_truth_number_count": gt_total,
-        "prediction_number_count": pred_total,
-        "matched_number_count": matched,
-        "number_precision": round(precision, 4),
-        "number_recall": round(recall, 4),
-        "number_f1_score": round(f1, 4),
-        "missing_numbers": dict(gt_numbers - pred_numbers),
-        "extra_numbers": dict(pred_numbers - gt_numbers),
+        "total_words": n,
+        "loop_detected": bool(repeated_sequences),
+        "loop_count": len(repeated_sequences),
+        "estimated_excess_words": total_excess_words,
+        "loop_details": repeated_sequences,
     }
 
 
-textract_text = "Invoice 12345 Total Amount 1,500.00 Tax 18%"
-baidu_text = "Invoice 12345 Total Amount 1500.00 Tax 8%"
+def compare_looping(ground_truth: str, prediction: str) -> dict:
+    gt_result = evaluate_looping(ground_truth)
+    pred_result = evaluate_looping(prediction)
 
-result = evaluate_number_accuracy(textract_text, baidu_text)
-print(result)
+    return {
+        "ground_truth_loop_detected": gt_result["loop_detected"],
+        "prediction_loop_detected": pred_result["loop_detected"],
+        "prediction_loop_count": pred_result["loop_count"],
+        "prediction_excess_words": pred_result["estimated_excess_words"],
+        "ground_truth_loops": gt_result["loop_details"],
+        "prediction_loops": pred_result["loop_details"],
+    }
