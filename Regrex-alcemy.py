@@ -1,63 +1,34 @@
 import re
+from collections import Counter
 
 
-def clean_ocr_text(text: str) -> str:
-    # Remove OCR special tokens and page markers
-    text = re.sub(r"<\|.*?\|>", " ", text)
+def evaluate_bag_of_words(ground_truth: str, prediction: str) -> dict:
+    def tokenize(text):
+        return re.findall(r"\b\w+\b", text.casefold())
 
-    # Remove Markdown code blocks and formatting
-    text = re.sub(r"```[\s\S]*?```", " ", text)
-    text = re.sub(r"`+", "", text)
-    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
-    text = re.sub(r"\*\*|__|~~|\*|_", "", text)
+    gt_words = Counter(tokenize(ground_truth))
+    pred_words = Counter(tokenize(prediction))
 
-    # Keep visible link text, remove URL formatting
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    matched = sum((gt_words & pred_words).values())
+    gt_total = sum(gt_words.values())
+    pred_total = sum(pred_words.values())
 
-    # Remove HTML/XML tags
-    text = re.sub(r"</?[^>]+>", " ", text)
+    precision = matched / pred_total if pred_total else 0.0
+    recall = matched / gt_total if gt_total else 0.0
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision + recall else 0.0
+    )
 
-    # Remove escaped and actual newline/tab separators
-    text = re.sub(r"\\[nrt]", " ", text)
-    text = re.sub(r"[\r\n\t]+", " ", text)
-
-    # Normalize whitespace
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def parse_textract_record(content, line_coord, word_coord):
-    lines = str(content).split("\n")
-    line_boxes = str(line_coord).split("|") if line_coord else []
-    word_boxes = str(word_coord).split("|") if word_coord else []
-
-    result = []
-    word_index = 0
-
-    for line_index, line in enumerate(lines):
-        words = [word.strip() for word in line.split("\t") if word.strip()]
-        parsed_words = []
-
-        for word in words:
-            box = (
-                word_boxes[word_index].strip()
-                if word_index < len(word_boxes)
-                else None
-            )
-
-            parsed_words.append({
-                "word": word,
-                "word_coord": box
-            })
-            word_index += 1
-
-        result.append({
-            "line": line,
-            "line_coord": (
-                line_boxes[line_index].strip()
-                if line_index < len(line_boxes)
-                else None
-            ),
-            "words": parsed_words
-        })
-
-    return result
+    return {
+        "ground_truth_word_count": gt_total,
+        "prediction_word_count": pred_total,
+        "matched_word_count": matched,
+        "precision": round(precision, 4),
+        "recall": round(recall, 4),
+        "f1_score": round(f1, 4),
+        "missing_words": dict(gt_words - pred_words),
+        "extra_words": dict(pred_words - gt_words),
+        "missing_word_occurrences": sum((gt_words - pred_words).values()),
+        "extra_word_occurrences": sum((pred_words - gt_words).values()),
+    }
