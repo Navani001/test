@@ -1,50 +1,45 @@
 import re
-from rapidfuzz.distance import Levenshtein
+from collections import Counter
 
 
-def normalize_text(text: str) -> str:
-    text = text.casefold()
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+def evaluate_number_accuracy(ground_truth: str, prediction: str) -> dict:
+    pattern = r"(?<!\w)[+-]?\d[\d,]*(?:\.\d+)?%?(?!\w)"
 
+    def extract_numbers(text):
+        return [
+            number.replace(",", "")
+            for number in re.findall(pattern, text)
+        ]
 
-def calculate_cer(ground_truth: str, prediction: str) -> dict:
-    gt = normalize_text(ground_truth)
-    pred = normalize_text(prediction)
+    gt_numbers = Counter(extract_numbers(ground_truth))
+    pred_numbers = Counter(extract_numbers(prediction))
 
-    errors = Levenshtein.distance(gt, pred)
+    matched = sum((gt_numbers & pred_numbers).values())
+    gt_total = sum(gt_numbers.values())
+    pred_total = sum(pred_numbers.values())
+
+    precision = matched / pred_total if pred_total else 0.0
+    recall = matched / gt_total if gt_total else 0.0
+
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision + recall else 0.0
+    )
 
     return {
-        "character_errors": errors,
-        "ground_truth_characters": len(gt),
-        "cer": errors / len(gt) if gt else (0.0 if not pred else float("inf")),
+        "ground_truth_number_count": gt_total,
+        "prediction_number_count": pred_total,
+        "matched_number_count": matched,
+        "number_precision": round(precision, 4),
+        "number_recall": round(recall, 4),
+        "number_f1_score": round(f1, 4),
+        "missing_numbers": dict(gt_numbers - pred_numbers),
+        "extra_numbers": dict(pred_numbers - gt_numbers),
     }
 
 
-def calculate_wer(ground_truth: str, prediction: str) -> dict:
-    gt_words = normalize_text(ground_truth).split()
-    pred_words = normalize_text(prediction).split()
+textract_text = "Invoice 12345 Total Amount 1,500.00 Tax 18%"
+baidu_text = "Invoice 12345 Total Amount 1500.00 Tax 8%"
 
-    errors = Levenshtein.distance(gt_words, pred_words)
-
-    return {
-        "word_errors": errors,
-        "ground_truth_words": len(gt_words),
-        "wer": errors / len(gt_words)
-        if gt_words
-        else (0.0 if not pred_words else float("inf")),
-    }
-
-
-def evaluate_ocr(ground_truth: str, prediction: str) -> dict:
-    return {
-        **calculate_cer(ground_truth, prediction),
-        **calculate_wer(ground_truth, prediction),
-    }
-
-
-# Example
-textract_text = "Patient Name John Smith Total Amount 500"
-baidu_text = "Patient Name John Smit Total Amount 500"
-
-print(evaluate_ocr(textract_text, baidu_text))
+result = evaluate_number_accuracy(textract_text, baidu_text)
+print(result)
