@@ -1,34 +1,50 @@
 import re
-from collections import Counter
+from rapidfuzz.distance import Levenshtein
 
 
-def evaluate_bag_of_words(ground_truth: str, prediction: str) -> dict:
-    def tokenize(text):
-        return re.findall(r"\b\w+\b", text.casefold())
+def normalize_text(text: str) -> str:
+    text = text.casefold()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
-    gt_words = Counter(tokenize(ground_truth))
-    pred_words = Counter(tokenize(prediction))
 
-    matched = sum((gt_words & pred_words).values())
-    gt_total = sum(gt_words.values())
-    pred_total = sum(pred_words.values())
+def calculate_cer(ground_truth: str, prediction: str) -> dict:
+    gt = normalize_text(ground_truth)
+    pred = normalize_text(prediction)
 
-    precision = matched / pred_total if pred_total else 0.0
-    recall = matched / gt_total if gt_total else 0.0
-    f1 = (
-        2 * precision * recall / (precision + recall)
-        if precision + recall else 0.0
-    )
+    errors = Levenshtein.distance(gt, pred)
 
     return {
-        "ground_truth_word_count": gt_total,
-        "prediction_word_count": pred_total,
-        "matched_word_count": matched,
-        "precision": round(precision, 4),
-        "recall": round(recall, 4),
-        "f1_score": round(f1, 4),
-        "missing_words": dict(gt_words - pred_words),
-        "extra_words": dict(pred_words - gt_words),
-        "missing_word_occurrences": sum((gt_words - pred_words).values()),
-        "extra_word_occurrences": sum((pred_words - gt_words).values()),
+        "character_errors": errors,
+        "ground_truth_characters": len(gt),
+        "cer": errors / len(gt) if gt else (0.0 if not pred else float("inf")),
     }
+
+
+def calculate_wer(ground_truth: str, prediction: str) -> dict:
+    gt_words = normalize_text(ground_truth).split()
+    pred_words = normalize_text(prediction).split()
+
+    errors = Levenshtein.distance(gt_words, pred_words)
+
+    return {
+        "word_errors": errors,
+        "ground_truth_words": len(gt_words),
+        "wer": errors / len(gt_words)
+        if gt_words
+        else (0.0 if not pred_words else float("inf")),
+    }
+
+
+def evaluate_ocr(ground_truth: str, prediction: str) -> dict:
+    return {
+        **calculate_cer(ground_truth, prediction),
+        **calculate_wer(ground_truth, prediction),
+    }
+
+
+# Example
+textract_text = "Patient Name John Smith Total Amount 500"
+baidu_text = "Patient Name John Smit Total Amount 500"
+
+print(evaluate_ocr(textract_text, baidu_text))
