@@ -1,171 +1,210 @@
-import re
-from difflib import SequenceMatcher
+def generate_summary(page_results):
+    def get_dict(data, key):
+        value = data.get(key, {})
+        return value if isinstance(value, dict) else {}
 
+    def get_int(data, key):
+        try:
+            return int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
 
-def normalize_text(text):
-    if not text:
-        return ""
+    def get_float(data, key):
+        try:
+            return float(data.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
-    text = str(text).lower()
-    text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"[^\w\s]", "", text)
+    def ratio(numerator, denominator):
+        return round(numerator / denominator, 4) if denominator else 0.0
 
-    return text.strip()
+    def percentage(numerator, denominator):
+        return round(numerator / denominator * 100, 2) if denominator else 0.0
 
+    pages = page_results if isinstance(page_results, list) else []
+    successful_pages = [
+        page for page in pages if not page.get("failure_reason")
+    ]
+    failed_pages = [
+        page for page in pages if page.get("failure_reason")
+    ]
 
-def get_text(item):
-    return str(item.get("text") or item.get("str") or "").strip()
+    def section_total(section, key):
+        return sum(
+            get_int(get_dict(page, section), key)
+            for page in successful_pages
+        )
 
+    gt_words = section_total("bag_of_words", "ground_truth_word_count")
+    pred_words = section_total("bag_of_words", "prediction_word_count")
+    matched_words = section_total("bag_of_words", "matched_word_count")
 
-def get_coord(item):
-    return item.get("coord")
-
-
-def box_match_probability(gt_box, baidu_box):
-    if not gt_box or not baidu_box:
-        return 0.0
-
-    if len(gt_box) != 4 or len(baidu_box) != 4:
-        return 0.0
-
-    gx1, gy1, gx2, gy2 = map(float, gt_box)
-    bx1, by1, bx2, by2 = map(float, baidu_box)
-
-    gx1, gx2 = min(gx1, gx2), max(gx1, gx2)
-    gy1, gy2 = min(gy1, gy2), max(gy1, gy2)
-    bx1, bx2 = min(bx1, bx2), max(bx1, bx2)
-    by1, by2 = min(by1, by2), max(by1, by2)
-
-    ix1 = max(gx1, bx1)
-    iy1 = max(gy1, by1)
-    ix2 = min(gx2, bx2)
-    iy2 = min(gy2, by2)
-
-    intersection_area = (
-        max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    )
-
-    gt_area = (gx2 - gx1) * (gy2 - gy1)
-
-    if gt_area <= 0:
-        return 0.0
-
-    return intersection_area / gt_area
-
-
-def match_text(gt_text, baidu_text, similarity_threshold=0.90):
-    gt = normalize_text(gt_text)
-    baidu = normalize_text(baidu_text)
-
-    if not gt or not baidu:
-        return False
-
-    if gt == baidu or gt in baidu:
-        return True
-
-    if len(gt) < 4:
-        return False
-
-    if len(baidu) <= len(gt):
-        similarity = SequenceMatcher(None, gt, baidu).ratio()
-        return similarity >= similarity_threshold
-
-    window_size = len(gt)
-
-    for start in range(len(baidu) - window_size + 1):
-        candidate = baidu[start:start + window_size]
-
-        similarity = SequenceMatcher(
-            None, gt, candidate
-        ).ratio()
-
-        if similarity >= similarity_threshold:
-            return True
-
-    return False
-
-
-def evaluate_textract_in_baidu(
-    ground_truth,
-    baidu_output,
-    min_spatial_coverage=0.5,
-    similarity_threshold=0.90,
-):
-    total_textract_boxes = 0
-    matched_boxes = 0
-
-    for gt in ground_truth:
-        gt_text = get_text(gt)
-        gt_box = get_coord(gt)
-
-        if not gt_text or not gt_box:
-            continue
-
-        total_textract_boxes += 1
-        found_match = False
-
-        for baidu in baidu_output:
-            baidu_text = get_text(baidu)
-            baidu_box = get_coord(baidu)
-
-            if not baidu_text or not baidu_box:
-                continue
-
-            coverage = box_match_probability(gt_box, baidu_box)
-
-            if coverage < min_spatial_coverage:
-                continue
-
-            if match_text(
-                gt_text,
-                baidu_text,
-                similarity_threshold,
-            ):
-                found_match = True
-                break
-
-        if found_match:
-            matched_boxes += 1
-
-    unmatched_boxes = total_textract_boxes - matched_boxes
-
-    match_percentage = (
-        matched_boxes / total_textract_boxes * 100
-        if total_textract_boxes
-        else 0.0
-    )
-
-    return {
-        "total_textract_boxes": total_textract_boxes,
-        "matched_boxes": matched_boxes,
-        "unmatched_boxes": unmatched_boxes,
-        "match_percentage": round(match_percentage, 2),
+    error_totals = {
+        "character_errors": sum(
+            get_int(get_dict(get_dict(page, "error_rate_evaluation"), "cer"),
+                    "character_errors")
+            for page in successful_pages
+        ),
+        "ground_truth_characters": sum(
+            get_int(get_dict(get_dict(page, "error_rate_evaluation"), "cer"),
+                    "ground_truth_characters")
+            for page in successful_pages
+        ),
+        "word_errors": sum(
+            get_int(get_dict(get_dict(page, "error_rate_evaluation"), "wer"),
+                    "word_errors")
+            for page in successful_pages
+        ),
+        "ground_truth_words": sum(
+            get_int(get_dict(get_dict(page, "error_rate_evaluation"), "wer"),
+                    "ground_truth_words")
+            for page in successful_pages
+        ),
     }
 
-
-if __name__ == "__main__":
-    ground_truth = [
-        {"text": "Invoice Number", "coord": [100, 100, 250, 130]},
-        {"str": "INV12345", "coord": [260, 100, 360, 130]},
-        {"text": "Total Amount", "coord": [100, 200, 250, 230]},
-    ]
-
-    baidu_output = [
-        {
-            "text": "Invoice Number INV12345",
-            "coord": [95, 95, 370, 135],
-        },
-        {
-            "str": "Total Amount",
-            "coord": [100, 200, 250, 230],
-        },
-    ]
-
-    results = evaluate_textract_in_baidu(
-        ground_truth,
-        baidu_output,
-        min_spatial_coverage=0.5,
-        similarity_threshold=0.90,
+    gt_numbers = section_total(
+        "number_accuracy", "ground_truth_number_count"
+    )
+    pred_numbers = section_total(
+        "number_accuracy", "prediction_number_count"
+    )
+    matched_numbers = section_total(
+        "number_accuracy", "matched_number_count"
     )
 
-    print(results)
+    gt_boxes = section_total(
+        "bounding_box_evaluation", "total_textract_boxes"
+    )
+    matched_boxes = section_total(
+        "bounding_box_evaluation", "matched_boxes"
+    )
+    unmatched_boxes = section_total(
+        "bounding_box_evaluation", "unmatched_boxes"
+    )
+
+    total_time = sum(
+        get_float(page, "time_seconds") for page in pages
+    )
+    prompt_tokens = sum(
+        get_int(get_dict(page, "token_usage"), "prompt_tokens")
+        for page in pages
+    )
+    completion_tokens = sum(
+        get_int(get_dict(page, "token_usage"), "completion_tokens")
+        for page in pages
+    )
+    total_tokens = sum(
+        get_int(get_dict(page, "token_usage"), "total_tokens")
+        for page in pages
+    )
+
+    prediction_loop_pages = sum(
+        bool(get_dict(page, "loop_evaluation").get(
+            "prediction_loop_detected", False
+        ))
+        for page in pages
+    )
+    ground_truth_loop_pages = sum(
+        bool(get_dict(page, "loop_evaluation").get(
+            "ground_truth_loop_detected", False
+        ))
+        for page in pages
+    )
+
+    summary = {
+        "document_summary": {
+            "total_pages": len(pages),
+            "successful_pages": len(successful_pages),
+            "failed_pages": len(failed_pages),
+            "failed_page_details": [
+                {
+                    "page": page.get("page", index),
+                    "failure_reason": page.get("failure_reason"),
+                }
+                for index, page in enumerate(pages)
+                if page.get("failure_reason")
+            ],
+        },
+        "bag_of_words": {
+            "ground_truth_word_count": gt_words,
+            "prediction_word_count": pred_words,
+            "matched_word_count": matched_words,
+            "missing_word_occurrences": section_total(
+                "bag_of_words", "missing_word_occurrences"
+            ),
+            "extra_word_occurrences": section_total(
+                "bag_of_words", "extra_word_occurrences"
+            ),
+            "precision": ratio(matched_words, pred_words),
+            "recall": ratio(matched_words, gt_words),
+            "f1_score": ratio(
+                2 * matched_words, pred_words + gt_words
+            ),
+        },
+        "error_rate_evaluation": {
+            "cer": {
+                "character_errors": error_totals["character_errors"],
+                "ground_truth_characters": error_totals[
+                    "ground_truth_characters"
+                ],
+                "cer": ratio(
+                    error_totals["character_errors"],
+                    error_totals["ground_truth_characters"],
+                ),
+            },
+            "wer": {
+                "word_errors": error_totals["word_errors"],
+                "ground_truth_words": error_totals["ground_truth_words"],
+                "wer": ratio(
+                    error_totals["word_errors"],
+                    error_totals["ground_truth_words"],
+                ),
+            },
+        },
+        "number_accuracy": {
+            "ground_truth_number_count": gt_numbers,
+            "prediction_number_count": pred_numbers,
+            "matched_number_count": matched_numbers,
+            "missing_number_count": max(gt_numbers - matched_numbers, 0),
+            "extra_number_count": max(pred_numbers - matched_numbers, 0),
+            "precision": ratio(matched_numbers, pred_numbers),
+            "recall": ratio(matched_numbers, gt_numbers),
+            "f1_score": ratio(
+                2 * matched_numbers, pred_numbers + gt_numbers
+            ),
+        },
+        "bounding_box_evaluation": {
+            "total_textract_boxes": gt_boxes,
+            "matched_boxes": matched_boxes,
+            "unmatched_boxes": unmatched_boxes,
+            "match_percentage": percentage(matched_boxes, gt_boxes),
+        },
+        "loop_evaluation": {
+            "pages_with_ground_truth_loops": ground_truth_loop_pages,
+            "pages_with_prediction_loops": prediction_loop_pages,
+            "total_prediction_loop_count": sum(
+                get_int(get_dict(page, "loop_evaluation"),
+                        "prediction_loop_count")
+                for page in pages
+            ),
+            "total_prediction_excess_words": sum(
+                get_int(get_dict(page, "loop_evaluation"),
+                        "prediction_excess_words")
+                for page in pages
+            ),
+        },
+        "performance": {
+            "total_time_seconds": round(total_time, 2),
+            "average_time_per_page_seconds": round(
+                total_time / len(pages), 2
+            ) if pages else 0,
+            "total_prompt_tokens": prompt_tokens,
+            "total_completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "average_tokens_per_page": round(
+                total_tokens / len(pages), 2
+            ) if pages else 0,
+        },
+    }
+
+    return summary
