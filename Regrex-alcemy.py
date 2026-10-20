@@ -1,10 +1,35 @@
-Summary and Recommendations
+import fitz
+import cv2
+import numpy as np
+import indra_ocr
 
-Based on the evaluation, batch size 1 is recommended for stable and reliable OCR extraction. Batch sizes 3 and 4 did not improve processing time, while batch size 2 introduced significant page-separation failures.
 
-- N-gram size: Use "ngram_size=35" as the preferred configuration. Values 10 and 20 may cause content omission, while 50 provides similar performance to 35.
-- Window size: Use "window_size=128", as larger values showed no meaningful overall improvement.
-- Maximum tokens: Use "max_tokens=8192", which was sufficient for the tested documents.
-- DPI: Choose 300 for slightly better extraction accuracy and bounding-box coverage, or 200 when faster processing is the priority.
+def pdf_to_ocr(pdf_path, dpi=200, threads=4):
+    conv = indra_ocr.load(threads=threads)
+    scale = dpi / 72
 
-Overall, the recommended configuration is "batch_size=1", "ngram_size=35", "window_size=128", "max_tokens=8192", and "DPI=300". This provides a strong balance of extraction accuracy, structural reliability, and processing performance based on the current evaluation.
+    with fitz.open(pdf_path) as pdf:
+        for page_num, pdf_page in enumerate(pdf, start=1):
+
+            # Render PDF page directly into memory
+            pix = pdf_page.get_pixmap(
+                matrix=fitz.Matrix(scale, scale),
+                alpha=False
+            )
+
+            # Convert pixel buffer to NumPy array (no image file saved)
+            image = np.frombuffer(
+                pix.samples, dtype=np.uint8
+            ).reshape(pix.height, pix.width, pix.n)
+
+            # Convert RGB to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+            # Run Indra OCR on the in-memory image
+            result = conv.ocr(gray)
+
+            print(f"\n--- Page {page_num} ---")
+            print(result.markdown)
+
+
+pdf_to_ocr("input.pdf", dpi=200, threads=4)
