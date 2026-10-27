@@ -1,102 +1,54 @@
 
-import os
 import fitz
-import indra_ocr
-
-from file import append_to_json_file
-
-
-def ensure_folder(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
-        print(f"Folder newly created at path: {path}")
-    else:
-        print(f"Folder already exists at path: {path}")
+import pytesseract
+from PIL import Image
+from io import BytesIO
 
 
-def normalize_pdf_orientation(input_path, output_path):
-    with fitz.open(input_path) as doc:
+def detect_pdf_orientation(pdf_path, dpi=100):
+    results = []
+
+    with fitz.open(pdf_path) as doc:
         for page_no, page in enumerate(doc):
-            if page.rotation != 0:
-                print(
-                    f"Page {page_no + 1}: "
-                    f"{page.rotation} -> 0 degrees"
+            # Render at low resolution for speed
+            pix = page.get_pixmap(
+                dpi=dpi,
+                colorspace=fitz.csGRAY,
+                alpha=False
+            )
+
+            image = Image.open(
+                BytesIO(pix.tobytes("png"))
+            )
+
+            try:
+                osd = pytesseract.image_to_osd(
+                    image,
+                    config="--psm 0"
                 )
-                page.remove_rotation()
-            else:
-                print(
-                    f"Page {page_no + 1}: "
-                    "Already at 0 degrees"
+
+                rotation = int(
+                    next(
+                        line.split(":")[1].strip()
+                        for line in osd.splitlines()
+                        if line.startswith("Rotate:")
+                    )
                 )
 
-        doc.save(output_path, garbage=4, deflate=True)
+                results.append({
+                    "page": page_no + 1,
+                    "rotation": rotation
+                })
 
-    return output_path
+            except Exception as e:
+                results.append({
+                    "page": page_no + 1,
+                    "rotation": None,
+                    "error": str(e)
+                })
+
+    return results
 
 
-# Configuration
-PDF_PATH = (
-    "/home/nlpdevintern1/ocrResearch/sample-test-pdf/"
-    "conflict-pages/test-data-100.pdf"
-)
-
-OUT_FOLDER_PATH = (
-    "/home/nlpdevintern1/ocrResearch/indra/"
-    "indra-data/data/run11/"
-)
-
-ensure_folder(OUT_FOLDER_PATH)
-
-FURNITURE = True
-DPI = 300
-MATH = False
-mode = "ocr"
-
-CORRECTED_PDF_PATH = os.path.join(
-    OUT_FOLDER_PATH, "corrected_orientation.pdf"
-)
-
-OUTPUT_JSON_PATH = os.path.join(
-    OUT_FOLDER_PATH,
-    f"extraction-furniture-{FURNITURE}"
-    f"-DPI-{DPI}-MATH-{MATH}.json"
-)
-
-# Step 1: Normalize PDF rotation metadata
-normalize_pdf_orientation(
-    PDF_PATH,
-    CORRECTED_PDF_PATH
-)
-
-# Step 2: Initialize Indra OCR
-conv = indra_ocr.load(
-    threads=4,
-    furniture=FURNITURE,
-    dpi=DPI,
-    mode=mode,
-    image_ocr=True
-)
-
-# Step 3: Extract and save OCR results
-for page_no, page in enumerate(
-    conv.convert(CORRECTED_PDF_PATH)
-):
-    print(f"Processing page {page_no + 1}")
-
-    append_to_json_file(
-        OUTPUT_JSON_PATH,
-        {
-            "page_no": page_no,
-            "file_path": PDF_PATH,
-            "file_name": os.path.basename(PDF_PATH),
-            "time_ms": page.timings["total_ms"],
-            "text": str(page.text),
-            "lines": str(page.lines),
-            "markdown": page.markdown,
-            "blocks": page.blocks,
-            "note": page.note,
-        }
-    )
-
-print("OCR extraction completed.")
-print(f"Results saved to: {OUTPUT_JSON_PATH}")
+for result in detect_pdf_orientation("input.pdf"):
+    print(result)
