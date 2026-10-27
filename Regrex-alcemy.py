@@ -1,38 +1,57 @@
-def rotated_to_target_bbox(
-    bbox,
-    original_width,
-    original_height,
-    target_width,
-    target_height
-):
-    x0, y0, x1, y1 = bbox
 
-    # Undo -90° rotation
-    x0_original = y0
-    y0_original = original_height - x1
-    x1_original = y1
-    y1_original = original_height - x0
+import fitz
+import cv2
+import numpy as np
 
-    # Scale to target dimensions
-    scale_x = target_width / original_width
-    scale_y = target_height / original_height
 
-    return (
-        x0_original * scale_x,
-        y0_original * scale_y,
-        x1_original * scale_x,
-        y1_original * scale_y,
+def detect_page_orientation(page, dpi=100):
+    # Render the page at low resolution for speed
+    pix = page.get_pixmap(
+        dpi=dpi,
+        colorspace=fitz.csGRAY,
+        alpha=False
     )
 
+    image = np.frombuffer(
+        pix.samples, dtype=np.uint8
+    ).reshape(pix.height, pix.width)
 
-bbox_rotated = [229.2, 340.0, 510.6, 355.8]
+    best_angle = 0
+    best_score = -1
 
-bbox_target = rotated_to_target_bbox(
-    bbox_rotated,
-    original_width=2550,
-    original_height=3300,
-    target_width=1224,
-    target_height=1584,
-)
+    for angle in (0, 90, 180, 270):
+        rotated = np.rot90(image, k=angle // 90)
 
-print(bbox_target)
+        binary = cv2.threshold(
+            rotated, 0, 255,
+            cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )[1]
+
+        # Emphasize horizontal text lines
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT, (15, 1)
+        )
+        lines = cv2.morphologyEx(
+            binary, cv2.MORPH_CLOSE, kernel
+        )
+
+        projection = np.sum(lines > 0, axis=1)
+        score = np.sum(projection.astype(np.float64) ** 2)
+
+        if score > best_score:
+            best_score = score
+            best_angle = angle
+
+    return best_angle
+
+
+pdf_path = "input.pdf"
+
+with fitz.open(pdf_path) as doc:
+    for i, page in enumerate(doc):
+        angle = detect_page_orientation(page)
+        print(
+            f"Page {i + 1}: "
+            f"metadata={page.rotation}°, "
+            f"detected correction={angle}°"
+        )
