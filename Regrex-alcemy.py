@@ -1,10 +1,21 @@
-. Analysis and Evaluation of Indra OCR Conflict Pages
-Description
-Analyze Indra OCR results for identified conflict pages, focusing on sideways-oriented, rotated, and blurry images. Compare extracted text against ground truth using CER, WER, text matching, and number accuracy to identify error patterns and evaluate performance.
-Expected outcome
-Documented evaluation results highlighting conflict-page errors and accuracy variations.
-2. Investigation of Conflict Pages and Workaround Identification
-Description
-Investigate the causes of OCR errors on conflict pages and explore potential workarounds for sideways orientation, rotation, and blurry images to improve text extraction reliability.
-Expected outcome
-Identified error causes and documented workarounds with their observed impact on OCR performance.
+import os
+import sys
+import time
+import platform
+
+print("Python:", sys.executable)
+print("Working directory:", os.getcwd())
+print("Script:", __file__)
+print("Python paths:", sys.path)
+print("CPU count:", os.cpu_count())
+print("CPU affinity:", os.sched_getaffinity(0))
+print("Platform:", platform.platform())
+
+for key in [
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD"
+]:
+    print(key, os.environ.get(key))
