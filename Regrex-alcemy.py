@@ -1,31 +1,56 @@
-### 5.2 Single-Core and Multi-Core Processing Comparison
+import base64
+import requests
+import os
 
-Inference performance was evaluated under single-core and multi-core processing configurations using the 100-page dataset to understand the impact of CPU parallelization on Indra OCR processing time.
+API_URL = "http://localhost:5000/v1/chat/completions"
+API_KEY = os.getenv("API_KEY")
 
-The same Indra OCR configuration was maintained across all experiments to ensure a consistent comparison.
+def encode_image(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
-The following parameters were recorded:
+image = encode_image("sample.png")
 
-* Total inference time: Time taken to process all 100 pages.
+payload = {
+    "model": "qwen",
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are an expert document analysis assistant."
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": """
+                    Context:
+                    This image belongs to a medical record.
 
-* Average inference time: Average time taken to process a single page, calculated by dividing the total inference time by the number of pages processed.
+                    Task:
+                    Analyze the layout, identify tables,
+                    headings and paragraphs.
+                    """
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{image}"
+                    }
+                }
+            ]
+        }
+    ],
+    "temperature": 0.1
+}
 
-Evaluation Results:
+response = requests.post(
+    API_URL,
+    headers={
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    },
+    json=payload
+)
 
-| Dataset          | CPU cores used  | Total inference time (seconds) | Average inference time (ms/page) |
-| ---------------- | --------------- | ------------------------------ | -------------------------------- |
-| 100-page dataset | 1 (Single-core) |                                |                                  |
-| 100-page dataset | 2               |                                |                                  |
-| 100-page dataset | 4               |                                |                                  |
-
-Observations:
-
-* The text extraction accuracy results were almost identical across all core configurations.
-
-* No significant changes were observed in the evaluation metrics when processing documents using single-core and multi-core configurations.
-
-* The primary difference between the configurations was observed in inference performance.
-
-* Total and average inference times were compared to understand the impact of increasing the number of CPU cores on processing performance.
-
-The results help assess whether multi-core processing provides a performance improvement over single-core inference without affecting text extraction accuracy.
+print(response.json())
