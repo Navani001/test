@@ -1,56 +1,8 @@
-import base64
-import requests
-import os
-
-API_URL = "http://localhost:5000/v1/chat/completions"
-API_KEY = os.getenv("API_KEY")
-
-def encode_image(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode("utf-8")
-
-image = encode_image("sample.png")
-
-payload = {
-    "model": "qwen",
-    "messages": [
-        {
-            "role": "system",
-            "content": "You are an expert document analysis assistant."
-        },
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": """
-                    Context:
-                    This image belongs to a medical record.
-
-                    Task:
-                    Analyze the layout, identify tables,
-                    headings and paragraphs.
-                    """
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{image}"
-                    }
-                }
-            ]
-        }
-    ],
-    "temperature": 0.1
-}
-
-response = requests.post(
-    API_URL,
-    headers={
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    },
-    json=payload
-)
-
-print(response.json())
+ Work Item
+Evaluation of Baidu Unlimited OCR Models for Layout Analysis
+Approach
+Evaluated Baidu Unlimited OCR and Unlimited OCR 2 on the DMALL 100-page dataset to explore their suitability for layout ground truth generation. Manually analysed the extracted layouts and bounding boxes. Bounding box generation was good, but the model-generated labels were not accurate.
+2. Work Item
+Layout and Bounding Box Extraction Using LLM
+Approach
+Explored using an LLM to extract layouts and generate bounding boxes and labels. Analysed the bounding box mismatches and also tested using Heron-generated layouts as the base, with an LLM as a judge to refine labels and bounding boxes. Tested the approach on 2 pages, and the corrections were good, but occasional retries were observed.
