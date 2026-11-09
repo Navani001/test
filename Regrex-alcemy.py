@@ -1,23 +1,40 @@
-### 1\. Work Item
+Hi Team,
 
-Evaluation of Baidu Unlimited OCR Models for Layout Analysis
+I am sharing the findings from our evaluation of Indra OCR to assess its suitability as an alternative OCR solution, benchmarked against our current reference system, AWS Textract.
 
-Approach
+Report link: Indra OCR Evaluation Report
 
-Evaluated Baidu Unlimited OCR and Unlimited OCR 2 on the DMALL 100-page dataset to explore their suitability for layout ground truth generation. Manually analysed the extracted layouts and bounding boxes. Bounding box generation was good, but the model-generated labels were not accurate.
+1. Objective
 
-### 2\. Work Item
+To assess Indra OCR, a lightweight, CPU-based model developed by Datalab, on text extraction accuracy, numerical recognition, and inference performance, and to determine its viability as an alternative or complement to AWS Textract.
 
-Layout and Bounding Box Extraction Using LLM
+2. Evaluation Setup
 
-Approach
+- Datasets: Small, medium, and large collections of medical records spanning the IBR, MAR, and Smart Record services, including challenging categories such as complex tables, blurry, rotated, and handwritten pages.
+- Selected configuration: OCR mode with an optimized rendering resolution, furniture retention enabled, math extraction disabled, and no additional preprocessing.
+- Reference: AWS Textract outputs were used as the comparison baseline.
 
-Explored using an LLM to extract layouts and generate bounding boxes and labels. Analysed the bounding box mismatches and also tested using Heron-generated layouts as the base, with an LLM as a judge to refine labels and bounding boxes. Tested the approach on 2 pages, and the corrections were good, but occasional retries were observed.
+3. Principal Findings
 
-### 3\. Work Item
+- Strengths: Indra OCR demonstrated strong extraction accuracy on commonly encountered medical record pages, with reliable numerical recognition and fast CPU-only inference. Extraction accuracy remained consistent across single-core and multi-core processing configurations.
 
-Prompt Optimization for Layout Analysis
+- Limitations identified through failure analysis:
+  
+  - Oriented pages: Inconsistent rotation handling.
+  - Handwritten pages: Lower recognition accuracy compared to AWS Textract.
+  - Blurry pages: Reduced text recognition accuracy.
+  - Image pages: Non-text elements occasionally misrecognized as text.
+  - Unusual fonts: Incorrect word splitting in certain cases.
+  - Complex pages: Both Indra OCR and AWS Textract struggled with pages containing multiple challenging characteristics.
 
-Approach
+4. Recommendation and Further Work
 
-Discussed the LLM-based correction approach and retry issues with Sorna. Received suggestions for prompt updates and shared the generated image with bounding boxes for further analysis. Planned to incorporate the suggested changes to improve the process of generating suitable layout ground truth.
+Indra OCR is well-suited as a primary engine for regular medical record pages, while conflict pages with challenging characteristics require an alternative OCR engine. To enable this hybrid approach, further investigation is needed to separate conflict pages from non-conflict pages. A reliable page-level classification mechanism will be the focus of the next phase of this work.
+
+Detailed metrics, category-wise results, and the full experimental methodology are provided in the report.
+
+I would also like to thank Sorna N.A. and Abhinand N.A. for their valuable guidance and support throughout this evaluation.
+
+Please feel free to ping me if you need any additional details or clarification regarding the evaluation and its findings.
+
+Best regards,
