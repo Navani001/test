@@ -1,8 +1,7 @@
-Work Item
-Identification and Categorization of Difficult Pages for Hybrid OCR
-Description
-Identify and categorize difficult pages to establish a reliable approach for separating normal and difficult pages. This will support a potential hybrid OCR workflow, where Indra OCR processes normal pages and an alternative OCR solution handles difficult pages.
-Task 1: LLM-Based Difficult Category Detection
-Develop an LLM-based script to iterate through document pages and identify the presence of predefined difficult-page categories. The script should analyze each page, detect applicable difficulty types, and support identifying multiple categories within a single page.
-Task 2: Page-to-Category Mapping
-Develop a separate script to map document pages with their corresponding difficult categories based on the detection results. Organize the mapping in a structured format to identify which pages belong to each difficulty category.
+### 1\. Work Item: Discovery of New Difficulty Categories for Indra OCR
+
+Approach: Developed an LLM-based script to analyse page images along with existing failure categories and identify new difficulty types that are not covered by the current categories. Currently running the script on the large dataset to discover additional failure patterns.
+
+### 2\. Work Item: Failure Taxonomy Mapping and Consolidation
+
+Approach: Added an LLM-based taxonomy summarisation step to group different category names that represent the same type of failure under a common taxonomy. This helps avoid duplicate categories and maintain a consistent list of difficulty categories across the dataset.
