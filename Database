@@ -1,2 +1,0 @@
-- Explored existing benchmarks for structural evaluation of OCR outputs, focusing on OmniDocBench and its evaluation approach.
-- Studied the evaluation methods and metrics used in OmniDocBench, including edit distance, to understand how document extraction quality and structural differences are measured.
