@@ -1,7 +1,7 @@
-### 1\. Work Item: Discovery of New Difficulty Categories for Indra OCR
+### 1\. Work Item: New OCR Failure Category Analysis
 
-Approach: Developed an LLM-based script to analyse page images along with existing failure categories and identify new difficulty types that are not covered by the current categories. Currently running the script on the large dataset to discover additional failure patterns.
+Approach: Further analyse the new OCR failure categories identified by the LLM by manually reviewing the page images and understanding how each category affects OCR extraction quality. Identify whether these categories represent genuine extraction failures and determine their relevance to the Indra OCR hybrid approach.
 
-### 2\. Work Item: Failure Taxonomy Mapping and Consolidation
+### 2\. Work Item: Hybrid Approach for Layout Ground Truth Preparation
 
-Approach: Added an LLM-based taxonomy summarisation step to group different category names that represent the same type of failure under a common taxonomy. This helps avoid duplicate categories and maintain a consistent list of difficulty categories across the dataset.
+Approach: Tested a hybrid approach combining LLM-based layout analysis with Textract coordinates for bounding box mapping. The initial results were promising compared to the other approaches tested. Planned to validate the results with Sorna N.A. and get his feedback before proceeding further.
