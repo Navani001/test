@@ -1,7 +1,7 @@
-### 1\. Work Item: New OCR Failure Category Analysis
+1. LLM-Based OCR Difficulty Category Discovery
 
-Approach: Further analyse the new OCR failure categories identified by the LLM by manually reviewing the page images and understanding how each category affects OCR extraction quality. Identify whether these categories represent genuine extraction failures and determine their relevance to the Indra OCR hybrid approach.
+After analysing the newly identified difficulty categories, I felt there could be some potential OCR failure cases that were missed. So, I updated the prompt to give the LLM more room to identify additional failure categories and started a new run on the 10,000-page dataset.
 
-### 2\. Work Item: Hybrid Approach for Layout Ground Truth Preparation
+2. Hybrid Layout Ground Truth Generation Toolkit
 
-Approach: Tested a hybrid approach combining LLM-based layout analysis with Textract coordinates for bounding box mapping. The initial results were promising compared to the other approaches tested. Planned to validate the results with Sorna N.A. and get his feedback before proceeding further.
+Created a toolkit with the required setup and configurations to run the LLM and Textract-based layout ground truth generation script for layout analysis. Also shared the generation script with Sorna for testing.
